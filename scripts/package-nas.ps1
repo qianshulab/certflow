@@ -11,7 +11,9 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.IO.Compression
 $archive = [System.IO.Compression.ZipFile]::Open($releasePath, [System.IO.Compression.ZipArchiveMode]::Create)
 try {
-    $releaseFiles = @('Dockerfile', 'compose.yaml', 'compose.build.yaml', '.dockerignore', '.env.example', 'package.json', 'server.mjs', 'cli.mjs', 'cert-config.example.json', 'launch-gui.ps1', '启动图形界面.cmd', '停止图形界面.cmd', 'README.md', 'SECURITY.md', 'docs/docker-nas.md', 'docs/configuration.md', 'docs/RELEASE-0.4.0.md', 'docs/releases/v0.4.0-image.json', 'docs/gui-preview.jpg', 'docs/gui-credentials.jpg', 'examples/nginx-docker-config.json')
+    $releaseFiles = @('Dockerfile', 'compose.yaml', 'compose.build.yaml', '.dockerignore', '.env.example', 'package.json', 'server.mjs', 'cli.mjs', 'cert-config.example.json', 'launch-gui.ps1', '启动图形界面.cmd', '停止图形界面.cmd', 'README.md', 'SECURITY.md', 'docs/docker-nas.md', 'docs/configuration.md', "docs/RELEASE-$releaseVersion.md", 'docs/gui-preview.jpg', 'docs/gui-credentials.jpg', 'examples/nginx-docker-config.json')
+    $imageEvidence = "docs/releases/v$releaseVersion-image.json"
+    if (Test-Path -LiteralPath (Join-Path $projectRoot $imageEvidence)) { $releaseFiles += $imageEvidence }
     foreach ($folder in @('src', 'web')) {
         $releaseFiles += Get-ChildItem -LiteralPath (Join-Path $projectRoot $folder) -File | ForEach-Object { $folder + '/' + $_.Name }
     }

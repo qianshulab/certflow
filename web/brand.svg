@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <title>CertFlow</title>
+  <rect x="1" y="1" width="46" height="46" rx="12" fill="#252525"/>
+  <path d="M35 11.5A17 17 0 1 0 39.5 31" stroke="#ff713e" stroke-width="4" stroke-linecap="round"/>
+  <path d="m29 9 8 1.5-1.5 8" stroke="#ff713e" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M20 15.5h7l7 7V34a2 2 0 0 1-2 2H20a2 2 0 0 1-2-2V17.5a2 2 0 0 1 2-2Z" fill="#252525" stroke="#f5f1ed" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M27 16v6.5h6.5" stroke="#f5f1ed" stroke-width="2" stroke-linejoin="round"/>
+  <path d="m22 28.5 3 3 5-6" stroke="#ff713e" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

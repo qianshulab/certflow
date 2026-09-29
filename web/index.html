@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>CertFlow · HTTPS 证书管理</title>
+  <link rel="icon" href="/brand.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/app.css">
   <script src="/app.js" defer></script>
 </head>
@@ -27,7 +28,7 @@
   </svg>
   <a class="skip-link" href="#main">跳到主要内容</a>
   <aside class="sidebar">
-    <a class="brand" href="#overview" aria-label="CertFlow 首页"><span class="brand-symbol"><svg class="icon"><use href="#i-shield"/></svg></span><span>CertFlow<span class="brand-sub">HTTPS 证书管理</span></span></a>
+    <a class="brand" href="#overview" aria-label="CertFlow 首页"><img class="brand-mark" src="/brand.svg" width="29" height="29" alt=""><span>CertFlow<span class="brand-sub">HTTPS 证书管理</span></span></a>
     <nav class="navigation" aria-label="主导航">
       <button class="nav-item active" data-view="overview" aria-current="page"><svg class="icon"><use href="#i-grid"/></svg><span>证书工作台</span></button>
       <button class="nav-item" data-view="config"><svg class="icon"><use href="#i-file"/></svg><span>证书配置</span></button>
@@ -63,7 +64,7 @@
         <div class="page-heading"><div><div class="eyebrow">CERTIFICATE SETTINGS</div><h1 tabindex="-1">证书与签发设置</h1><p>填写域名和验证方式。保存配置后，再手动开始申请。</p></div><button class="button secondary" id="preview-plan">查看执行计划</button></div>
         <form id="config-form" novalidate><div id="validation-summary" class="banner danger" role="alert" hidden></div><div class="panel form-panel"><div class="section-heading"><div><h2>账户与签发环境</h2><p class="section-description">建议先使用测试环境验证流程，再切换正式环境。</p></div><span class="pill neutral-pill">Let's Encrypt</span></div><div class="form-grid"><div class="field"><label for="config-email">联系邮箱 <span class="required">*</span></label><input id="config-email" type="email" autocomplete="email" placeholder="name@yourdomain.com" required><small>用于 ACME 账户联系信息。</small></div><div class="field"><label for="config-environment">签发环境</label><select id="config-environment"><option value="staging">测试环境 · 先验证流程</option><option value="production">正式环境 · 浏览器信任</option></select><small id="environment-help">测试证书不被浏览器信任，不能自动部署。</small></div></div><label class="checkbox-line"><input type="checkbox" id="config-terms"><span>我已阅读并同意 <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer">Let's Encrypt 服务条款<svg class="icon inline-icon"><use href="#i-link"/></svg></a>，允许此工具申请和续期证书。</span></label></div>
         <div class="standalone-heading"><div><h2>证书任务</h2><p>同一张证书可以包含多个域名，也可以包含通配符。</p></div><button type="button" class="button secondary" id="add-job"><svg class="icon"><use href="#i-plus"/></svg>新增任务</button></div>
-        <div class="editor-workspace"><nav id="job-selector" class="job-selector" aria-label="选择编辑的证书任务"></nav><div id="job-editors"></div></div>
+        <div class="editor-workspace"><aside class="job-navigation" aria-label="证书任务导航"><div class="job-navigation-heading"><strong>任务列表</strong><span id="job-navigation-count" class="count-badge">0</span></div><div class="job-search"><label class="sr-only" for="job-search">搜索配置任务或域名</label><input id="job-search" type="search" placeholder="搜索任务 ID 或域名" autocomplete="off"><button type="button" id="clear-job-search" class="text-button" disabled>清除</button></div><p id="job-search-status" class="job-search-status" role="status"></p><nav id="job-selector" class="job-selector" aria-label="选择编辑的证书任务"></nav><p class="job-navigation-hint">切换任务会保留未保存的修改。</p></aside><div id="job-editors"></div></div>
         <details class="panel advanced-global"><summary>高级设置<span>客户端与数据存储</span></summary><div class="form-grid"><div class="field"><label for="config-lego">lego 客户端路径</label><input id="config-lego" placeholder="lego" spellcheck="false"><small>使用已安装的 lego v5 客户端。</small></div><div class="field"><label for="config-data">证书数据目录</label><input id="config-data" placeholder="./data" spellcheck="false"><small>相对路径以配置文件所在目录为基准。</small></div></div><p class="fine-print" id="config-path"></p></details>
         <div class="save-bar"><span id="save-hint">保存不会修改 DNS 或申请证书。</span><div class="button-group"><button type="button" class="button secondary" id="reset-config">撤销修改</button><button type="submit" class="button primary" id="save-config"><svg class="icon"><use href="#i-check"/></svg>保存配置</button></div></div></form>
       </section>

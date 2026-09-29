@@ -49,6 +49,15 @@ test('remote GUI protects state, static app, mutations and exports behind login'
   assert.equal((await get('/')).status, 302);
   assert.equal((await get('/app.js')).status, 302);
   assert.equal((await get('/login')).status, 200);
+  const brand = await get('/brand.svg');
+  assert.equal(brand.status, 200, 'the login page may load the fixed public brand asset');
+  assert.match(brand.headers.get('content-type'), /^image\/svg\+xml/);
+  assert.match(await brand.text(), /<svg[\s>]/);
+  for (const route of ['/brand.svg/../server.mjs', '/brand.svg%2f..%2fserver.mjs', '/brand.svg/../../config.json']) {
+    const response = await get(route);
+    assert.equal(response.status, 302);
+    assert.equal((await response.text()).includes('operator@example.com'), false);
+  }
   assert.equal((await get('/api/state')).status, 401);
   assert.equal((await post('/api/export', { id: 'example', kind: 'privateKey' })).status, 401);
   assert.equal((await post('/auth/login', { password: fakePassword }, { Origin: 'http://malicious.test' })).status, 403);

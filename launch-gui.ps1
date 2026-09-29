@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $baseUrl = "http://127.0.0.1:$Port"
 $expectedApp = 'https-cert-manager'
-$expectedVersion = '0.4.0'
+$expectedVersion = '0.4.1'
 
 function Get-GuiHealth {
     try {

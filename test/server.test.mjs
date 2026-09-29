@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../server.mjs';
-import { jobPaths, loadConfig } from '../src/core.mjs';
+import { jobPaths, loadConfig, runOnce } from '../src/core.mjs';
 import { exportCertificate } from '../src/export.mjs';
 
 const rawConfig = () => ({
@@ -171,6 +171,7 @@ test('unknown URLs and traversal requests cannot read workspace configuration or
   for (const requestPath of [
     '/config.json', '/server.mjs', '/private.txt', '/api/unknown',
     '/../private.txt', '/%2e%2e/private.txt', '/%2e%2e%5cprivate.txt',
+    '/brand.svg/../server.mjs', '/brand.svg%2f..%2fserver.mjs', '/brand.svg/../../config.json',
     '/api/export?id=site&kind=privateKey',
   ]) {
     const response = await rawRequest(app.url, requestPath);
@@ -197,6 +198,40 @@ test('config saves use optimistic versions and preserve the current file on conf
   });
   assert.equal(invalid.status, 400);
   assert.equal(await fs.readFile(app.configPath, 'utf8'), saved);
+});
+
+test('100 jobs with 100 domains save beyond 128 KiB while oversized requests preserve config and drain before shutdown', async (t) => {
+  const app = await workspace(t);
+  const config = rawConfig();
+  config.jobs = Array.from({ length: 100 }, (_, index) => ({
+    ...rawConfig().jobs[0], id: `site-${index}`, enabled: index % 3 !== 0,
+    domains: Array.from({ length: 100 }, (_, domain) => `domain-${domain}.site-${index}.example.com`),
+  }));
+  const payload = { config, version: app.state.configVersion };
+  assert.ok(Buffer.byteLength(JSON.stringify(payload)) > 128 * 1024);
+  const savedResponse = await app.post('/api/config', payload);
+  assert.equal(savedResponse.status, 200);
+  const state = await savedResponse.json();
+  assert.equal(state.statuses.length, 100);
+  assert.deepEqual(state.config.jobs.map(job => job.domains), config.jobs.map(job => job.domains));
+  assert.deepEqual((await loadConfig(app.configPath)).jobs.map(job => job.enabled), config.jobs.map(job => job.enabled));
+  const saved = await fs.readFile(app.configPath, 'utf8');
+  for (const [route, limitBytes] of [['/api/config', 2 * 1024 * 1024], ['/api/plan', 128 * 1024]]) {
+    const response = await app.post(route, { config, version: state.configVersion, padding: 'x'.repeat(limitBytes) });
+    assert.equal(response.status, 413);
+    const error = await response.json();
+    assert.equal(error.code, 'REQUEST_BODY_TOO_LARGE');
+    assert.equal(error.limitBytes, limitBytes);
+    assert.match(error.error, /上限/);
+    assert.equal(await fs.readFile(app.configPath, 'utf8'), saved);
+  }
+  const after = await (await fetch(`${app.url}/api/state`)).json();
+  assert.equal(after.configVersion, state.configVersion);
+  assert.equal(after.config.jobs.length, 100);
+  let strandedConnection = false;
+  const guard = setTimeout(() => { strandedConnection = true; app.server.closeAllConnections(); }, 3000);
+  try { await app.close(); } finally { clearTimeout(guard); }
+  assert.equal(strandedConnection, false, 'oversized uploads must not strand a socket and block clean shutdown');
 });
 
 test('an invalid config remains recoverable from the GUI without silently overwriting it', async (t) => {
@@ -241,6 +276,53 @@ test('only one asynchronous run is admitted and running jobs prevent config and 
   } finally { release.resolve(); }
   await until(async () => !(await (await fetch(`${app.url}/api/state`)).json()).runtime.running,
     'the GUI must clear the running flag after completion');
+  const finished = (await (await fetch(`${app.url}/api/state`)).json()).runtime;
+  assert.equal(finished.currentJob, null);
+  assert.equal(finished.completedCount, 1, 'a runner without progress events still reports its final completion');
+  assert.equal(finished.totalJobs, 1);
+});
+
+test('the real serial runner exposes current and completed jobs immediately and logs each result once', async (t) => {
+  const entered = deferred(), release = deferred();
+  const certificate = await fs.readFile(new URL('./fixtures/single-domain-cert.test.txt', import.meta.url));
+  const privateKey = await fs.readFile(new URL('./fixtures/server-key.test.txt', import.meta.url));
+  const app = await workspace(t, { run: (config, options) => runOnce(config, { ...options, executor: async (_executable, args) => {
+    if (args.includes('--version')) return { code: 0, stdout: 'lego version 5.5.2', stderr: '' };
+    if (args.includes('--help')) return { code: 0, stdout: '--cert.name --renew-force', stderr: '' };
+    const job = config.jobs.find(item => item.id === args[args.indexOf('--cert.name') + 1]);
+    assert.notEqual(job.id, 'paused');
+    if (job.id === 'second') { entered.resolve(); await release.promise; return { code: 1, stdout: '', stderr: '' }; }
+    const files = jobPaths(config, job);
+    await fs.mkdir(path.dirname(files.certificate), { recursive: true });
+    await fs.writeFile(files.certificate, certificate);
+    await fs.writeFile(files.privateKey, privateKey);
+    return { code: 0, stdout: '', stderr: '' };
+  } }) });
+  const config = rawConfig();
+  config.jobs = ['first', 'paused', 'second'].map(id => ({ id, enabled: id !== 'paused', domains: ['example.com'], challenge: { type: 'http', webroot: '.' } }));
+  const saved = await app.post('/api/config', { config, version: app.state.configVersion });
+  assert.equal(saved.status, 200); await saved.json();
+  try {
+    const response = await app.post('/api/run');
+    assert.equal(response.status, 202); await response.json();
+    await entered.promise;
+    const partial = await (await fetch(`${app.url}/api/state`)).json();
+    assert.equal(partial.runtime.running, true);
+    assert.equal(partial.runtime.currentJob, 'second');
+    assert.equal(partial.runtime.completedCount, 1);
+    assert.equal(partial.runtime.totalJobs, 2);
+    assert.deepEqual(partial.runtime.results.map(result => [result.id, result.ok]), [['first', true]]);
+    assert.equal(partial.logs.filter(entry => entry.message.startsWith('first：')).length, 1);
+    assert.equal((await app.post('/api/run')).status, 409);
+  } finally { release.resolve(); }
+  await until(async () => !(await (await fetch(`${app.url}/api/state`)).json()).runtime.running, 'batch must finish');
+  const finished = await (await fetch(`${app.url}/api/state`)).json();
+  assert.equal(finished.runtime.currentJob, null);
+  assert.equal(finished.runtime.completedCount, 2);
+  assert.equal(finished.runtime.totalJobs, 2);
+  assert.deepEqual(finished.runtime.results.map(result => [result.id, result.ok]), [['first', true], ['second', false]]);
+  assert.equal(finished.logs.filter(entry => entry.message.startsWith('first：')).length, 1);
+  assert.equal(finished.logs.filter(entry => entry.message.startsWith('second：')).length, 1);
 });
 
 test('optional session credentials reach run through env and never appear in public state or config', async (t) => {
@@ -251,6 +333,7 @@ test('optional session credentials reach run through env and never appear in pub
   const seen = [];
   const app = await workspace(t, { run: async (_config, options) => {
     seen.push(options.env);
+    options.onProgress({ type: 'job-start', id: 'site', index: 1, total: 1 });
     // Raw runner errors must be redacted before they become UI logs.
     throw new Error(`runner failed with ${secretId} and ${secretKey}`);
   } });
@@ -265,6 +348,11 @@ test('optional session credentials reach run through env and never appear in pub
   assert.equal((await app.post('/api/run')).status, 202);
   await until(async () => seen.length === 1 && !(await (await fetch(`${app.url}/api/state`)).json()).runtime.running,
     'failed runner must finish without leaking session credentials');
+  const failed = (await (await fetch(`${app.url}/api/state`)).json()).runtime;
+  assert.equal(failed.currentJob, null, 'a rejected runner must clear its last active job');
+  assert.equal(failed.completedCount, 0);
+  assert.equal(failed.totalJobs, 1);
+  assert.match(failed.error, /runner failed/);
   assert.equal(seen[0].TENCENTCLOUD_SECRET_ID, secretId);
   assert.equal(seen[0].TENCENTCLOUD_SECRET_KEY, secretKey);
   assert.equal(process.env.TENCENTCLOUD_SECRET_ID, inheritedId);

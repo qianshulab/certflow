@@ -94,7 +94,7 @@ test('duplicate job IDs, unsafe filenames, and overlapping deployment directorie
   const deployment = { directory: './live', checkCommand: ['check'], reloadCommand: ['reload'] };
   assert.throws(() => validateConfig(rawConfig({ environment: 'production', jobs: [
     { ...job, id: 'one', deployment }, { ...job, id: 'two', deployment: { ...deployment, directory: './live/.' } },
-  ] })), /相同目录/);
+  ] })), /任务 one 与 two 不能部署到相同目录/);
 });
 
 test('configuration paths resolve against the config file and preview has no filesystem side effects', async (t) => {
@@ -464,6 +464,53 @@ test('an all-paused bulk run is a successful no-op without consent, a lock, or s
   assert.deepEqual(await runOnce(config, { executor: async () => assert.fail('paused run invoked a subprocess') }), []);
   await assert.rejects(fs.stat(config.dataDir), { code: 'ENOENT' });
   await assert.rejects(runOnce(config, { only: 'site' }), /acceptTerms/);
+});
+
+test('batch progress reports each serial job including corrupt state, backoff and failure without changing results', async (t) => {
+  const first = rawConfig().jobs[0];
+  const { config } = await workspace(t, { jobs: ['paused', 'broken', 'backoff', 'failed', 'healthy'].map(id => ({ ...first, id, enabled: id !== 'paused' })) });
+  for (const [id, contents] of [
+    ['broken', '{ invalid JSON'],
+    ['backoff', JSON.stringify({ nextAttemptAt: new Date(Date.now() + 60000).toISOString(), lastError: 'previous failure' })],
+  ]) {
+    const filename = jobPaths(config, config.jobs.find(job => job.id === id)).state;
+    await fs.mkdir(path.dirname(filename), { recursive: true });
+    await fs.writeFile(filename, contents);
+  }
+  const events = [];
+  const results = await runOnce(config, {
+    onProgress: async (event) => {
+      events.push(structuredClone(event));
+      if (event.result) event.result.ok = 'changed by observer';
+      throw new Error('observer failure must not alter a certificate job');
+    },
+    executor: async (_executable, args) => {
+      if (args.includes('--version')) return version;
+      if (args.includes('--help')) return help;
+      const job = config.jobs.find(item => item.id === args[args.indexOf('--cert.name') + 1]);
+      assert.equal(events.at(-1).type, 'job-start');
+      assert.equal(events.at(-1).id, job.id);
+      if (job.id === 'failed') return { ...success, code: 1 };
+      await issueFixture(config, job);
+      return success;
+    },
+  });
+  assert.deepEqual(events.map(({ type, id, index, total }) => ({ type, id, index, total })),
+    ['broken', 'backoff', 'failed', 'healthy'].flatMap((id, offset) => ['job-start', 'job-complete'].map(type => ({ type, id, index: offset + 1, total: 4 }))));
+  assert.deepEqual(events.filter(event => event.type === 'job-complete').map(event => event.result), results);
+  assert.deepEqual(results.map(result => [result.id, result.ok, result.action]), [
+    ['broken', false, 'failed'], ['backoff', false, 'backoff'], ['failed', false, 'failed'], ['healthy', true, 'issued'],
+  ]);
+  const explicit = [];
+  await runOnce(config, { only: 'paused', onProgress: event => explicit.push(event), executor: async (_executable, args) => {
+    if (args.includes('--version')) return version;
+    if (args.includes('--help')) return help;
+    await issueFixture(config, config.jobs[0]);
+    return success;
+  } });
+  assert.deepEqual(explicit.map(({ type, id, index, total }) => ({ type, id, index, total })), [
+    { type: 'job-start', id: 'paused', index: 1, total: 1 }, { type: 'job-complete', id: 'paused', index: 1, total: 1 },
+  ]);
 });
 
 test('certificate status validates the private key and exact current SANs before reporting usable', async (t) => {

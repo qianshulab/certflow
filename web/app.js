@@ -31,6 +31,7 @@ let logSignature = '';
 let exportSignature = '';
 let setupSignature = '';
 let selectedEditor = 0;
+let jobSearchText = '';
 let selectedProvider = 'dnspod-token';
 let searchText = '';
 let certificateFilter = 'all';
@@ -105,6 +106,7 @@ function switchView(view, focus = true) {
   if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
   $('draft-banner').hidden = !dirty || view === 'config';
   if (focus) $(`view-${view}`).querySelector('h1')?.focus({ preventScroll: true });
+  if (view === 'config') requestAnimationFrame(() => revealSelectedJob());
 }
 function isExample(config = state?.config) {
   return config?.email === 'you@example.com';
@@ -239,7 +241,9 @@ function renderState() {
     : '开启后立即检查，设置会长期保存。自动续期需要工具服务持续运行。';
   const runtime = state.runtime ?? {};
   $('runtime-status').hidden = !runtime.running && !runtime.error;
-  $('runtime-status').textContent = runtime.running ? `正在${state.config?.environment === 'production' ? '正式' : '测试'}环境检查${runtime.only ? `任务 ${runtime.only}` : '全部任务'}。DNS 验证可能需要几分钟，可在活动记录中查看结果。` : runtime.error ? `上次执行未完成：${runtime.error}` : '';
+  const batchProgress = runtime.totalJobs > 0 ? `已完成 ${runtime.completedCount ?? 0} / ${runtime.totalJobs} 个任务。` : '';
+  const activeJob = runtime.currentJob ? `当前执行：${runtime.currentJob}。` : runtime.only ? `执行任务 ${runtime.only}。` : '批次正在执行，任务依次处理。';
+  $('runtime-status').textContent = runtime.running ? `${batchProgress}${activeJob}DNS 验证可能需要几分钟，可在活动记录中查看结果。` : runtime.error ? `上次执行未完成：${runtime.error}` : '';
   updateControls();
 }
 function metric(id, value, unit) { $(id).replaceChildren(document.createTextNode(String(value)), el('small', '', unit)); }
@@ -274,7 +278,13 @@ function renderSetup(jobs, statuses) {
 }
 function certificateStatus(job, status) {
   if (isExample()) return ['待配置', 'neutral'];
-  if (state.runtime?.running && (state.runtime.only === job.id || !state.runtime.only && job.enabled !== false)) return ['检查中', 'blue'];
+  const runtime = state.runtime;
+  if (runtime?.running && (runtime.only === job.id || !runtime.only && job.enabled !== false)) {
+    const result = runtime.results?.find((item) => item.id === job.id);
+    if (result) return result.action === 'backoff' ? ['退避等待', 'amber'] : [result.ok ? '本轮完成' : '本轮失败', result.ok ? 'teal' : 'red'];
+    if (runtime.currentJob === job.id) return ['检查中', 'blue'];
+    return [runtime.totalJobs > 0 ? '等待执行' : runtime.only ? '任务执行中' : '批次执行中', 'neutral'];
+  }
   if (status?.state?.lastError) return ['需要关注', 'red'];
   if (state.statusError) return ['状态未知', 'amber'];
   if (status?.certificate?.validTo && Date.parse(status.certificate.validTo) <= Date.now()) return ['已过期', 'red'];
@@ -287,9 +297,11 @@ function taskNeedsAttention(job, status) {
   return job.enabled !== false && (isExample() || status?.certificate?.status !== 'valid' || Date.parse(status.certificate.validTo) <= Date.now() || status?.state?.lastError || status?.state?.lastWarning || status?.state?.dnsCleanupPendingCount > 0 || status?.certificate?.remainingDays <= 30 || !credentialsReady(job));
 }
 function editJob(id) {
-  const index = draft?.jobs.findIndex((job) => job.id === id);
-  if (index >= 0) { selectedEditor = index; selectEditor(index); }
+  let index = draft?.jobs.findIndex((job) => job.__originalId === id) ?? -1;
+  if (index < 0 && !state?.config?.jobs.some((job) => job.id === id)) index = draft?.jobs.findIndex((job) => job.id === id) ?? -1;
   switchView('config');
+  if (index >= 0) selectEditor(index, { focusField: 'id' });
+  else toast(`任务 ${id} 已从当前草稿移除。请先保存或撤销修改，当前草稿已保留。`, true);
 }
 function showExports(id) {
   $('export-job').value = id;
@@ -299,7 +311,7 @@ function showExports(id) {
 }
 function renderCertificates(jobs, statuses) {
   if (!state) return;
-  const signature = JSON.stringify([jobs, statuses, state.credentials, state.runtime?.running, state.runtime?.only, state.statusError, state.config?.email, state.config?.environment, searchText, certificateFilter, certificateSort, selectedCertificate]);
+  const signature = JSON.stringify([jobs, statuses, state.credentials, state.runtime, state.statusError, state.config?.email, state.config?.environment, searchText, certificateFilter, certificateSort, selectedCertificate]);
   if (signature === renderSignature) return;
   renderSignature = signature;
   const filtered = jobs.filter((job) => {
@@ -328,6 +340,7 @@ function renderCertificates(jobs, statuses) {
   const activeElement = document.activeElement;
   const focusedTask = activeElement?.dataset?.selectJob;
   const scrollBefore = $('certificate-list').querySelector('.certificate-table-scroll')?.scrollLeft ?? 0;
+  const verticalScrollBefore = $('certificate-list').querySelector('.certificate-table-scroll')?.scrollTop ?? 0;
   const table = el('table', 'certificate-table');
   const caption = el('caption', 'sr-only', '证书任务。点击域名查看选中任务详情。');
   const head = el('thead'); const header = el('tr');
@@ -339,6 +352,7 @@ function renderCertificates(jobs, statuses) {
     const name = el('td', 'certificate-cell-domain');
     const choose = button('', 'certificate-select', () => { selectedCertificate = job.id; renderSignature = ''; renderCertificates(jobs, statuses); updateControls(); });
     choose.dataset.selectJob = job.id;
+    choose.title = `${job.id}\n${job.domains.join('\n')}`;
     choose.setAttribute('aria-pressed', String(job.id === selectedCertificate));
     choose.replaceChildren(el('strong', '', job.domains[0] ?? job.id), el('small', '', `${job.id}${job.domains.length > 1 ? ` · +${job.domains.length - 1} 个域名` : ''}`));
     name.append(choose);
@@ -385,6 +399,7 @@ function renderCertificates(jobs, statuses) {
   if (status?.certificate?.fingerprint) { const fingerprint = el('div', 'fingerprint'); fingerprint.append(el('span', '', 'SHA-256 指纹'), el('code', '', status.certificate.fingerprint)); inspector.append(fingerprint); }
   $('certificate-list').replaceChildren(wrapper, inspector);
   wrapper.scrollLeft = scrollBefore;
+  wrapper.scrollTop = verticalScrollBefore;
   if (focusedTask) [...$('certificate-list').querySelectorAll('[data-select-job]')].find((node) => node.dataset.selectJob === focusedTask)?.focus({ preventScroll: true });
 }
 function renderLogs() {
@@ -435,6 +450,7 @@ function updateControls() {
     : dirty ? '有未保存的修改 · 保存不会触发签发。' : '保存不会修改 DNS 或申请证书。');
   $('save-config').disabled = Boolean(block) || !dirty || draftVersion !== state?.configVersion;
   $('reset-config').disabled = Boolean(block) || !draft || !dirty && draftVersion === state?.configVersion;
+  $('clear-job-search').disabled = Boolean(block) || !jobSearchText;
   $('draft-banner').hidden = !dirty || currentView === 'config';
   document.querySelector('[data-view="config"]').classList.toggle('has-draft', dirty);
 }
@@ -445,9 +461,12 @@ function loadDraft(config, version) {
   draftVersion = version;
   dirty = false;
   validationVisible = false;
+  jobSearchText = '';
+  $('job-search').value = '';
   $('validation-summary').hidden = true;
   draft = structuredClone(config ?? { email: '', acceptTerms: false, environment: 'staging', legoPath: 'lego', dataDir: './data', jobs: [freshJob('my-domain')] });
   for (const job of draft.jobs) {
+    job.__originalId = job.id;
     job.__domainsText = job.domains.join('\n');
     job.__checkText = JSON.stringify(job.deployment?.checkCommand ?? ['nginx', '-t']);
     job.__reloadText = JSON.stringify(job.deployment?.reloadCommand ?? ['nginx', '-s', 'reload']);
@@ -461,16 +480,90 @@ function loadDraft(config, version) {
   updateEnvironmentHelp();
   renderEditors();
 }
-function markDirty() { dirty = true; updateControls(); if (validationVisible) validateDraft(false); }
+function markDirty() {
+  dirty = true;
+  if (validationVisible) validateDraft(false);
+  else renderTaskNavigation();
+  updateControls();
+}
 function updateEnvironmentHelp() {
   $('environment-help').textContent = $('config-environment').value === 'staging'
     ? '测试证书不被浏览器信任，不能自动部署。'
     : '正式证书可用于实际服务。切换环境后会显示该环境独立的证书与记录。';
 }
-function selectEditor(index) {
+function selectEditor(index, { focusField, focusHeading = false } = {}) {
+  rememberEditorUi();
   selectedEditor = Math.max(0, Math.min(index, draft.jobs.length - 1));
-  for (const [i, panel] of [...$('job-editors').children].entries()) panel.hidden = i !== selectedEditor;
-  for (const [i, node] of [...$('job-selector').children].entries()) { node.classList.toggle('selected', i === selectedEditor); node.setAttribute('aria-current', i === selectedEditor ? 'true' : 'false'); }
+  const job = draft.jobs[selectedEditor];
+  if (job && !jobMatchesSearch(job)) { jobSearchText = ''; $('job-search').value = ''; }
+  renderEditors();
+  requestAnimationFrame(() => {
+    revealSelectedJob();
+    if (focusField) focusEditorField(`job-${selectedEditor}-${focusField}`);
+    else if (focusHeading) {
+      const heading = $('job-editor-title');
+      heading?.focus({ preventScroll: true });
+      if (matchMedia('(max-width:650px)').matches) heading?.scrollIntoView({ block: 'start' });
+    }
+  });
+}
+function rememberEditorUi() {
+  const panel = $('job-editors').querySelector('.job-editor');
+  const job = panel?.jobDraft;
+  if (!job || !draft.jobs.includes(job)) return;
+  job.__deployOpen = Boolean(panel.querySelector('.advanced-deploy')?.open);
+  job.__textareaScroll = Object.fromEntries([...panel.querySelectorAll('textarea')].map((node) => [node.id.replace(/^job-\d+-/, ''), { top: node.scrollTop, left: node.scrollLeft }]));
+}
+function jobMatchesSearch(job) {
+  return `${job.id} ${job.__domainsText}`.toLowerCase().includes(jobSearchText);
+}
+function revealSelectedJob(index = selectedEditor) {
+  const list = $('job-selector');
+  const selected = list.querySelector(`[data-editor-index="${index}"]`);
+  if (!selected || list.clientHeight === 0) return;
+  const bounds = list.getBoundingClientRect(), item = selected.getBoundingClientRect();
+  if (item.top < bounds.top) list.scrollTop -= bounds.top - item.top;
+  else if (item.bottom > bounds.bottom) list.scrollTop += item.bottom - bounds.bottom;
+}
+function focusEditorField(id) {
+  const node = $(id);
+  if (!node) return;
+  node.closest('details')?.setAttribute('open', '');
+  node.focus({ preventScroll: true });
+  node.scrollIntoView({ block: 'center' });
+}
+function renderTaskNavigation(errors = []) {
+  if (!draft) return;
+  const list = $('job-selector');
+  const scrollTop = list.scrollTop;
+  const focusedIndex = list.contains(document.activeElement) ? document.activeElement.dataset.editorIndex : null;
+  const matches = draft.jobs.map((job, index) => ({ job, index })).filter(({ job }) => jobMatchesSearch(job));
+  const selectedInResults = matches.some((item) => item.index === selectedEditor);
+  const invalidTasks = new Set(errors.map((error) => error.id?.match(/^job-(\d+)-/)?.[1]).filter(Boolean));
+  $('job-navigation-count').textContent = draft.jobs.length;
+  const current = draft.jobs[selectedEditor];
+  $('job-search-status').textContent = `显示 ${matches.length} / ${draft.jobs.length} 个任务${current ? ` · 当前第 ${selectedEditor + 1} 个` : ''}`;
+  list.replaceChildren(...matches.map(({ job, index }) => {
+    const choice = button('', `job-choice${index === selectedEditor ? ' selected' : ''}${invalidTasks.has(String(index)) ? ' has-errors' : ''}`, () => selectEditor(index, { focusHeading: true }));
+    choice.dataset.editorIndex = String(index);
+    choice.tabIndex = index === selectedEditor || !selectedInResults && index === matches[0]?.index ? 0 : -1;
+    choice.setAttribute('aria-current', index === selectedEditor ? 'true' : 'false');
+    choice.setAttribute('aria-controls', 'job-editors');
+    const domains = job.__domainsText.trim().split(/[\s,，]+/).filter(Boolean);
+    const fullName = job.id || '未命名任务';
+    choice.title = `${fullName}\n${domains.join('\n') || '尚未填写域名'}`;
+    choice.setAttribute('aria-label', `任务 ${index + 1}：${fullName}${domains.length ? `，${domains.join('，')}` : '，尚未填写域名'}${invalidTasks.has(String(index)) ? '，配置需要修正' : ''}`);
+    const label = el('strong', '', fullName);
+    const domainSummary = domains.length ? `${domains[0]}${domains.length > 1 ? ` · +${domains.length - 1}` : ''}` : '填写域名开始配置';
+    choice.replaceChildren(el('span', 'editor-number', String(index + 1).padStart(2, '0')), label, el('small', '', domainSummary));
+    return choice;
+  }));
+  if (!matches.length) {
+    const empty = el('div', 'job-search-empty', draft.jobs.length ? '没有匹配的任务。清除搜索可查看全部任务；当前编辑内容会保留。' : '暂无任务。点击“新增任务”开始配置。');
+    list.append(empty);
+  }
+  list.scrollTop = scrollTop;
+  if (focusedIndex !== null) list.querySelector(`[data-editor-index="${focusedIndex}"]`)?.focus({ preventScroll: true });
 }
 function field(id, labelText, { type = 'text', value = '', placeholder = '', help = '', required = false, rows, options, onInput } = {}) {
   const wrapper = el('div', 'field');
@@ -490,16 +583,34 @@ function field(id, labelText, { type = 'text', value = '', placeholder = '', hel
   return { wrapper, input };
 }
 function renderEditors() {
-  $('job-editors').replaceChildren(...draft.jobs.map((job, index) => {
+  selectedEditor = Math.max(0, Math.min(selectedEditor, draft.jobs.length - 1));
+  const index = selectedEditor;
+  const job = draft.jobs[index];
+  if (!job) {
+    const empty = el('div', 'panel empty-state');
+    empty.append(icon('file'), el('h3', '', '至少需要一个证书任务'), el('p', '', '点击“新增任务”填写需要签发证书的域名。'));
+    $('job-editors').replaceChildren(empty);
+    renderTaskNavigation();
+    if (validationVisible) applyDraftErrors(collectDraftErrors());
+    updateControls();
+    return;
+  }
     const prefix = `job-${index}`;
     const panel = el('section', 'panel job-editor');
+    panel.jobDraft = job;
     const heading = el('div', 'section-heading');
     const title = el('div', 'editor-heading');
-    title.append(el('span', 'editor-number', String(index + 1).padStart(2, '0')), el('h3', '', '证书任务'));
+    const editorTitle = el('h3', '', `编辑任务 ${index + 1} / ${draft.jobs.length}`); editorTitle.id = 'job-editor-title'; editorTitle.tabIndex = -1;
+    title.append(el('span', 'editor-number', String(index + 1).padStart(2, '0')), editorTitle);
     const remove = button('移除任务', 'text-button danger-text', async () => {
       if (!await confirmAction(`移除任务 ${job.id || '未命名'}？`, '此操作会从配置草稿中移除任务，保存后生效。已签发的证书文件会保留。', '移除任务')) return;
-      draft.jobs.splice(index, 1); selectedEditor = Math.max(0, index - 1); markDirty(); renderEditors();
-      ($(`job-${selectedEditor}-id`) ?? $('add-job')).focus();
+      const removedIndex = draft.jobs.indexOf(job);
+      if (removedIndex < 0) return;
+      draft.jobs.splice(removedIndex, 1);
+      dirty = true;
+      jobSearchText = ''; $('job-search').value = '';
+      selectEditor(Math.min(removedIndex, draft.jobs.length - 1), { focusField: 'id' });
+      if (!draft.jobs.length) $('add-job').focus();
     });
     heading.append(title, remove);
     const scheduling = el('div', 'job-scheduling');
@@ -510,7 +621,7 @@ function renderEditors() {
     scheduling.append(schedulingLabel, el('small', '', '暂停任务不会删除证书，仍可单独手动检查。'));
     scheduleEnabled.addEventListener('change', () => { job.enabled = scheduleEnabled.checked; markDirty(); });
     const grid = el('div', 'form-grid');
-    const id = field(`${prefix}-id`, '任务 ID', { value: job.id, placeholder: 'nas-home', required: true, help: '小写字母、数字、短横线或下划线。修改已有 ID 会使用新的证书存储目录。', onInput: (value) => { job.id = value; $(`editor-label-${index}`).textContent = value || '未命名任务'; } });
+    const id = field(`${prefix}-id`, '任务 ID', { value: job.id, placeholder: 'nas-home', required: true, help: '小写字母、数字、短横线或下划线。修改已有 ID 会使用新的证书存储目录。', onInput: (value) => { job.id = value; } });
     id.input.pattern = '[a-z0-9][a-z0-9_-]{0,63}';
     const domains = field(`${prefix}-domains`, '域名', { type: 'textarea', value: job.__domainsText, placeholder: 'example.com\n*.example.com', required: true, help: '每行一个域名，也可以用空格或逗号分隔。无需 https://。', rows: 3, onInput: (value) => { job.__domainsText = value; } });
     grid.append(id.wrapper, domains.wrapper);
@@ -530,7 +641,7 @@ function renderEditors() {
     challengeRow.append(method.wrapper, challengeFields);
     const advanced = el('details', 'advanced-deploy');
     const summary = el('summary', '', '自动部署'); summary.append(el('span', '', '宝塔 / Nginx / Docker'));
-    advanced.open = Boolean(job.deployment);
+    advanced.open = job.__deployOpen ?? Boolean(job.deployment);
     const label = el('label', 'checkbox-line');
     const enabled = el('input'); enabled.type = 'checkbox'; enabled.id = `${prefix}-deploy-enabled`; enabled.checked = Boolean(job.deployment);
     label.htmlFor = enabled.id;
@@ -547,21 +658,18 @@ function renderEditors() {
     enabled.addEventListener('change', () => { job.deployment = enabled.checked ? {} : null; deploy.hidden = !enabled.checked; markDirty(); });
     advanced.append(summary, label, deploy);
     panel.append(heading, scheduling, grid, challengeRow, advanced);
-    return panel;
-  }));
-  $('job-selector').replaceChildren(...draft.jobs.map((job, index) => {
-    const choice = button('', 'job-choice', () => selectEditor(index));
-    choice.replaceChildren();
-    const label = el('strong', '', job.id || '未命名任务'); label.id = `editor-label-${index}`;
-    choice.append(el('span', 'editor-number', String(index + 1).padStart(2, '0')), label, el('small', '', job.domains[0] ?? '填写域名开始配置'));
-    return choice;
-  }));
-  selectEditor(selectedEditor);
-  if (!draft.jobs.length) {
-    const empty = el('div', 'panel empty-state'); empty.append(icon('file'), el('h3', '', '至少需要一个证书任务'), el('p', '', '点击「新增任务」填写需要签发证书的域名。'));
-    $('job-editors').append(empty);
-  }
+  $('job-editors').replaceChildren(panel);
+  const errors = validationVisible ? collectDraftErrors() : [];
+  renderTaskNavigation(errors);
+  if (validationVisible) applyDraftErrors(errors);
   updateControls();
+  requestAnimationFrame(() => {
+    revealSelectedJob();
+    for (const node of panel.querySelectorAll('textarea')) {
+      const saved = job.__textareaScroll?.[node.id.replace(/^job-\d+-/, '')];
+      if (saved) { node.scrollTop = saved.top; node.scrollLeft = saved.left; }
+    }
+  });
 }
 function configFromDraft() {
   const jobs = draft.jobs.map((job) => {
@@ -577,58 +685,143 @@ function configFromDraft() {
   });
   return { email: $('config-email').value.trim(), environment: $('config-environment').value, acceptTerms: $('config-terms').checked, legoPath: $('config-lego').value.trim() || 'lego', dataDir: $('config-data').value.trim() || './data', jobs };
 }
-function validateDraft(focusFirst = true) {
-  for (const node of $('config-form').querySelectorAll('.field-error')) node.remove();
-  for (const node of $('config-form').querySelectorAll('[aria-invalid]')) node.removeAttribute('aria-invalid');
-  const errors = [];
-  function invalid(id, message) {
-    const node = $(id); if (!node) return;
-    node.setAttribute('aria-invalid', 'true');
-    const error = el('span', 'field-error', message); error.id = `${id}-error`;
-    node.setAttribute('aria-describedby', [$( `${id}-help`) && `${id}-help`, error.id].filter(Boolean).join(' '));
-    node.closest('.field')?.append(error);
-    errors.push({ id, message });
+function deploymentDirectoryKey(value) {
+  // Use the server's path rules, never the browser's operating system. This key
+  // is only for validation; the original directory remains in the draft.
+  const base = state?.app?.baseDir || '';
+  const normalizeParts = (tail, separator, allowAboveRoot = false) => {
+    const parts = [];
+    for (const part of tail.split(separator)) {
+      if (!part || part === '.') continue;
+      if (part === '..') {
+        if (parts.length && parts.at(-1) !== '..') parts.pop();
+        else if (allowAboveRoot) parts.push(part);
+      } else parts.push(part);
+    }
+    return parts.join(separator);
+  };
+  if (state?.app?.platform !== 'win32') {
+    const resolved = value.startsWith('/') ? value : `${base}/${value}`;
+    const absolute = value.startsWith('/') || base.startsWith('/');
+    return `${absolute ? '/' : '\0relative/'}${normalizeParts(resolved, '/', !absolute)}`;
   }
+  const parse = (input) => {
+    const path = input.replaceAll('/', '\\');
+    const unc = path.match(/^\\\\([^\\]+)\\+([^\\]+)(?:\\|$)/);
+    if (unc) return { device: `\\\\${unc[1]}\\${unc[2]}`, absolute: true, tail: path.slice(unc[0].length) };
+    const drive = path.match(/^([a-z]:)(\\)?/i);
+    if (drive) return { device: drive[1], absolute: Boolean(drive[2]), tail: path.slice(drive[0].length) };
+    return { device: '', absolute: path.startsWith('\\'), tail: path };
+  };
+  const target = parse(value);
+  const origin = parse(base);
+  const device = target.device || origin.device;
+  let absolute = target.absolute;
+  let tail = target.tail;
+  if (!absolute) {
+    if (!target.device || target.device.toLowerCase() === origin.device.toLowerCase()) {
+      tail = `${origin.tail}\\${tail}`;
+      absolute = origin.absolute;
+    } else {
+      // Other-drive relative paths depend on the server's per-drive working
+      // directory. Keep them distinct from absolute paths; the server validates
+      // their final destinations when saving.
+      return `\0drive-relative:${target.device}\\${normalizeParts(tail, '\\', true)}`.toLowerCase();
+    }
+  }
+  return `${absolute ? device + '\\' : '\0relative:' + device}${normalizeParts(tail, '\\', !absolute)}`.toLowerCase();
+}
+function collectDraftErrors() {
+  const errors = [];
+  const seenIds = new Map();
+  const seenDirectories = new Map();
+  const invalid = (id, message) => {
+    if (!errors.some((error) => error.id === id && error.message === message)) errors.push({ id, message });
+  };
   const email = $('config-email');
   if (!email.value.trim() || !email.validity.valid) invalid('config-email', '请输入有效的联系邮箱。');
   if (!draft.jobs.length) errors.push({ message: '请至少添加一个证书任务。' });
-  const ids = new Set();
   draft.jobs.forEach((job, index) => {
     const prefix = `job-${index}`;
-    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(job.id) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(job.id)) invalid(`${prefix}-id`, '使用 1–64 位小写字母、数字、短横线或下划线，且不能使用系统保留名称。');
-    else if (ids.has(job.id)) invalid(`${prefix}-id`, '此任务 ID 已存在，请使用不同的名称。');
-    ids.add(job.id);
+    const id = job.id.trim();
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(id)) invalid(`${prefix}-id`, '使用 1–64 位小写字母、数字、短横线或下划线，且不能使用系统保留名称。');
+    if (seenIds.has(id)) {
+      invalid(`${prefix}-id`, '此任务 ID 与其他任务重复，请使用不同的名称。');
+      invalid(`job-${seenIds.get(id)}-id`, '此任务 ID 与其他任务重复，请使用不同的名称。');
+    } else seenIds.set(id, index);
     const domains = job.__domainsText.trim().split(/[\s,，]+/).filter(Boolean);
     if (!domains.length || domains.length > 100) invalid(`${prefix}-domains`, '请填写 1–100 个域名。');
     else {
       const malformed = domains.some((name) => {
         const bare = name.startsWith('*.') ? name.slice(2) : name;
-        if (/[\s/:#?@\\*]/.test(bare) || !bare.includes('.')) return true;
-        try { const normalized = new URL(`https://${bare}`).hostname; return normalized.split('.').some((part) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(part)); } catch { return true; }
+        if (/[\x00-\x20\s/:#?@%\\*]/.test(bare)) return true;
+        try {
+          const normalized = new URL(`https://${bare}`).hostname.toLowerCase();
+          const labels = normalized.split('.');
+          return normalized.length > 253 || labels.length < 2 || !/[a-z]/.test(labels.at(-1)) || labels.some((part) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part));
+        } catch { return true; }
       });
       if (malformed) invalid(`${prefix}-domains`, '请输入完整域名，例如 home.example.com；不要包含协议、端口或路径。');
       else if (job.challenge.type === 'http' && domains.some((name) => name.startsWith('*.'))) invalid(`${prefix}-domains`, '通配符证书需要选择 DNS 验证。');
     }
-    if (job.challenge.type === 'http' && !job.challenge.webroot?.trim()) invalid(`${prefix}-webroot`, '请填写网站根目录。');
+    if (job.challenge.type === 'http' && (!job.challenge.webroot?.trim() || /[\x00-\x1f]/.test(job.challenge.webroot))) invalid(`${prefix}-webroot`, '请填写有效的网站根目录，不能包含控制字符。');
     if (job.deployment) {
-      if ($('config-environment').value !== 'production') errors.push({ id: `${prefix}-deploy-enabled`, message: `任务 ${job.id}：自动部署需要正式环境。` });
-      if (!job.__directory.trim()) invalid(`${prefix}-directory`, '请填写证书部署目录。');
+      if ($('config-environment').value !== 'production') invalid(`${prefix}-deploy-enabled`, '自动部署需要正式环境。');
+      const directory = job.__directory.trim();
+      if (!directory || /[\x00-\x1f]/.test(directory)) invalid(`${prefix}-directory`, '请填写有效的证书部署目录，不能包含控制字符。');
+      else {
+        const directoryKey = deploymentDirectoryKey(directory);
+        if (seenDirectories.has(directoryKey)) {
+          invalid(`${prefix}-directory`, '该部署目录与其他任务指向相同位置，请为每张证书指定独立目录。');
+          invalid(`job-${seenDirectories.get(directoryKey)}-directory`, '该部署目录与其他任务指向相同位置，请为每张证书指定独立目录。');
+        } else seenDirectories.set(directoryKey, index);
+      }
       for (const [suffix, value] of [['check', job.__checkText], ['reload', job.__reloadText]]) {
-        try { const args = JSON.parse(value); if (!Array.isArray(args) || !args.length || args.some((arg) => typeof arg !== 'string' || !arg.trim())) throw new Error(); }
+        try { const args = JSON.parse(value); if (!Array.isArray(args) || !args.length || args.some((arg) => typeof arg !== 'string' || !arg.trim() || /[\x00-\x1f]/.test(arg))) throw new Error(); }
         catch { invalid(`${prefix}-${suffix}`, '请输入非空 JSON 参数数组，例如 ["nginx", "-t"]。'); }
       }
     }
   });
+  const taskIndex = (error) => { const match = error.id?.match(/^job-(\d+)-/); return match ? Number(match[1]) : -1; };
+  return errors.sort((a, b) => taskIndex(a) - taskIndex(b));
+}
+function focusDraftError(error) {
+  const matched = error.id?.match(/^job-(\d+)-(.+)$/);
+  if (matched) selectEditor(Number(matched[1]), { focusField: matched[2] });
+  else if (error.id) focusEditorField(error.id);
+  else $('add-job').focus();
+}
+function applyDraftErrors(errors) {
+  for (const node of $('config-form').querySelectorAll('.field-error')) node.remove();
+  for (const node of $('config-form').querySelectorAll('[aria-invalid]')) {
+    node.removeAttribute('aria-invalid');
+    if ($(`${node.id}-help`)) node.setAttribute('aria-describedby', `${node.id}-help`);
+    else node.removeAttribute('aria-describedby');
+  }
+  for (const error of errors) {
+    const node = $(error.id);
+    if (!node || node.getAttribute('aria-invalid') === 'true') continue;
+    node.setAttribute('aria-invalid', 'true');
+    const message = el('span', 'field-error', error.message); message.id = `${error.id}-error`;
+    node.setAttribute('aria-describedby', [$(`${error.id}-help`) && `${error.id}-help`, message.id].filter(Boolean).join(' '));
+    const field = node.closest('.field');
+    if (field) field.append(message);
+    else node.closest('label')?.after(message);
+  }
   const summary = $('validation-summary');
   summary.hidden = !errors.length;
-  summary.textContent = errors.length ? `还有 ${errors.length} 处需要修改：${errors[0].message}` : '';
-  if (errors.length && focusFirst) {
-    const first = errors.find((error) => error.id);
-    const matched = first?.id.match(/^job-(\d+)-/);
-    if (matched) selectEditor(Number(matched[1]));
-    if (first) { $(first.id).closest('details')?.setAttribute('open', ''); $(first.id).focus(); }
-    else summary.scrollIntoView({ block: 'center' });
-  }
+  if (!errors.length) { summary.replaceChildren(); return; }
+  const first = errors[0];
+  const firstTask = first.id?.match(/^job-(\d+)-/);
+  const context = firstTask ? `任务 ${Number(firstTask[1]) + 1}（${draft.jobs[Number(firstTask[1])]?.id || '未命名'}）：` : '';
+  const message = el('span', '', `还有 ${errors.length} 处需要修改：${context}${first.message}`);
+  summary.replaceChildren(message, button('定位首个问题', 'text-button', () => focusDraftError(first)));
+}
+function validateDraft(focusFirst = true) {
+  const errors = collectDraftErrors();
+  applyDraftErrors(errors);
+  renderTaskNavigation(errors);
+  if (errors.length && focusFirst) focusDraftError(errors[0]);
   return !errors.length;
 }
 function createCredentialPanels() {
@@ -840,9 +1033,36 @@ $('add-job').addEventListener('click', () => {
   let suffix = draft.jobs.length + 1;
   while (ids.has(`certificate-${suffix}`)) suffix++;
   draft.jobs.push(freshJob(`certificate-${suffix}`));
-  selectedEditor = draft.jobs.length - 1;
-  dirty = true; renderEditors();
-  $(`job-${draft.jobs.length - 1}-id`).focus();
+  dirty = true;
+  jobSearchText = ''; $('job-search').value = '';
+  selectEditor(draft.jobs.length - 1, { focusField: 'id' });
+});
+$('job-search').addEventListener('input', () => {
+  jobSearchText = $('job-search').value.trim().toLowerCase();
+  renderTaskNavigation(validationVisible ? collectDraftErrors() : []);
+  updateControls();
+});
+$('job-search').addEventListener('keydown', (event) => {
+  if (!['Enter', 'ArrowDown'].includes(event.key)) return;
+  event.preventDefault();
+  const first = $('job-selector').querySelector('[data-editor-index]');
+  if (!first) return;
+  if (event.key === 'Enter') selectEditor(Number(first.dataset.editorIndex), { focusHeading: true });
+  else { first.focus({ preventScroll: true }); revealSelectedJob(Number(first.dataset.editorIndex)); }
+});
+$('job-selector').addEventListener('keydown', (event) => {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  const items = [...$('job-selector').querySelectorAll('[data-editor-index]')];
+  const current = items.indexOf(event.target.closest('[data-editor-index]'));
+  if (current < 0) return;
+  event.preventDefault();
+  const target = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : Math.max(0, Math.min(items.length - 1, current + (event.key === 'ArrowDown' ? 1 : -1)));
+  items[target].focus({ preventScroll: true }); revealSelectedJob(Number(items[target].dataset.editorIndex));
+});
+$('clear-job-search').addEventListener('click', () => {
+  jobSearchText = ''; $('job-search').value = '';
+  renderTaskNavigation(validationVisible ? collectDraftErrors() : []);
+  revealSelectedJob(); updateControls(); $('job-search').focus();
 });
 $('reset-config').addEventListener('click', async () => {
   if (dirty && !await confirmAction('撤销未保存的修改？', '将重新读取已经保存的配置，当前草稿中的修改会被丢弃。', '撤销修改')) return;

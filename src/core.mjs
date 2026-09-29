@@ -53,7 +53,7 @@ export function validateConfig(raw, baseDir = process.cwd()) {
   if (raw.acceptTerms !== undefined && typeof raw.acceptTerms !== 'boolean') fail('acceptTerms 必须是布尔值。');
   if (!Array.isArray(raw.jobs) || !raw.jobs.length) fail('jobs 至少需要一个证书任务。');
   const ids = new Set();
-  const targets = new Set();
+  const targets = new Map();
   const jobs = raw.jobs.map((job) => {
     if (!job || typeof job !== 'object') fail('证书任务必须是对象。');
     if (typeof job.id !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(job.id) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(job.id)) fail('任务 id 只能含小写字母、数字、下划线或短横线，不能使用系统保留名称。');
@@ -76,8 +76,8 @@ export function validateConfig(raw, baseDir = process.cwd()) {
       if (environment !== 'production') fail('测试环境证书不能配置自动部署；请使用 deployment: null。');
       const directory = resolvePath(baseDir, string(job.deployment.directory, 'deployment.directory'));
       const targetKey = process.platform === 'win32' ? directory.toLowerCase() : directory;
-      if (targets.has(targetKey)) fail('多个任务不能部署到相同目录。');
-      targets.add(targetKey);
+      if (targets.has(targetKey)) fail(`任务 ${targets.get(targetKey)} 与 ${job.id} 不能部署到相同目录：${directory}。`);
+      targets.set(targetKey, job.id);
       deployment = {
         directory,
         checkCommand: argv(job.deployment.checkCommand, 'checkCommand'),
@@ -315,7 +315,7 @@ async function withLock(config, operation) {
   finally { await lock.close(); if (!preserveLock) await fs.unlink(filename); }
 }
 
-export async function runOnce(config, { only, ignoreBackoff = false, executor = runProcess, env = process.env } = {}) {
+export async function runOnce(config, { only, ignoreBackoff = false, executor = runProcess, env = process.env, onProgress } = {}) {
   const jobs = only ? config.jobs.filter((job) => job.id === only) : config.jobs.filter((job) => job.enabled !== false);
   if (only && !jobs.length) fail(`不存在任务：${only}`);
   if (!jobs.length) return [];
@@ -323,14 +323,22 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
   return withLock(config, async () => {
     const results = [];
     let clientChecked = false;
-    for (const job of jobs) {
+    for (const [offset, job] of jobs.entries()) {
+      // Progress is observational: a disconnected UI must not turn a completed
+      // issuance into a failure or interrupt the remaining certificate jobs.
+      const progress = async (type, result) => {
+        try { await onProgress?.({ type, id: job.id, index: offset + 1, total: jobs.length, ...(result ? { result: structuredClone(result) } : {}) }); }
+        catch { /* Reporting must never change certificate processing. */ }
+      };
+      const complete = async (result) => { results.push(result); await progress('job-complete', result); };
+      await progress('job-start');
       const files = jobPaths(config, job);
       let state;
       try { state = await readState(files.state); }
       catch (error) {
         // Preserve the original state for manual repair; one damaged job must
         // not block the remaining certificates or silently create a new order.
-        results.push({ id: job.id, ok: false, action: 'failed', error: error.message, stateError: true });
+        await complete({ id: job.id, ok: false, action: 'failed', error: error.message, stateError: true });
         continue;
       }
       let action = 'unchanged';
@@ -349,7 +357,7 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
           }
         }
         if (!ignoreBackoff && Date.parse(state.nextAttemptAt) > Date.now()) {
-          results.push({ id: job.id, ok: false, action: 'backoff', nextAttemptAt: state.nextAttemptAt, error: state.lastError });
+          await complete({ id: job.id, ok: false, action: 'backoff', nextAttemptAt: state.nextAttemptAt, error: state.lastError });
           continue;
         }
         state.lastAttemptAt = new Date().toISOString();
@@ -416,7 +424,7 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
         state.lastSuccessAt = new Date().toISOString();
         state.lastAction = action;
         await writeState(files.state, state);
-        results.push({ id: job.id, ok: true, action, certificatePath: files.certificate, privateKeyPath: files.privateKey, exportFiles: state.exportFiles,
+        await complete({ id: job.id, ok: true, action, certificatePath: files.certificate, privateKeyPath: files.privateKey, exportFiles: state.exportFiles,
           ...(state.lastWarning ? { warning: state.lastWarning } : {}) });
       } catch (error) {
         const processCleanupPending = requiresProcessCleanup(error);
@@ -427,7 +435,7 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
         let saveError = null;
         try { await writeState(files.state, state); }
         catch { saveError = '同时无法保存任务状态，请检查数据目录权限和磁盘空间。'; }
-        results.push({ id: job.id, ok: false, action: 'failed', error: saveError ? `${error.message} ${saveError}` : error.message,
+        await complete({ id: job.id, ok: false, action: 'failed', error: saveError ? `${error.message} ${saveError}` : error.message,
           nextAttemptAt: saveError ? null : state.nextAttemptAt, ...(saveError ? { stateError: true } : {}),
           ...(processCleanupPending ? { requiresProcessCleanup: true } : {}) });
         if (processCleanupPending) break;

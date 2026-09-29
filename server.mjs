@@ -14,7 +14,7 @@ import { preflight } from './src/preflight.mjs';
 import { createZip } from './src/zip.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const PROVIDERS = {
   'dnspod-token': ['DNSPOD_API_ID', 'DNSPOD_API_TOKEN'],
   tencentcloud: ['TENCENTCLOUD_SECRET_ID', 'TENCENTCLOUD_SECRET_KEY'],
@@ -23,11 +23,13 @@ const PROVIDERS = {
 };
 const EXPORT_NAMES = { certificate: 'cert.pem', chain: 'chain.pem', fullchain: 'fullchain.pem', privateKey: 'privkey.pem' };
 const ACTION_NAMES = { issued: '签发并导出完成', renewed: '续期并导出完成', deployed: '证书部署完成', unchanged: '检查完成，证书无需续期', backoff: '等待下次重试', failed: '执行失败' };
+const DEFAULT_BODY_LIMIT = 128 * 1024;
+const CONFIG_BODY_LIMIT = 2 * 1024 * 1024;
 const hash = (data) => createHash('sha256').update(data).digest('hex');
 class ApiError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, details = {}) { super(message); this.status = status; this.details = details; }
 }
-const reject = (status, message) => { throw new ApiError(status, message); };
+const reject = (status, message, details) => { throw new ApiError(status, message, details); };
 
 function editableConfig(config) {
   return {
@@ -37,15 +39,19 @@ function editableConfig(config) {
   };
 }
 
-async function readJsonBody(request) {
+async function readJsonBody(request, maxBytes = DEFAULT_BODY_LIMIT) {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers['content-type'] ?? '')) reject(415, '请求必须使用 JSON。');
   let size = 0;
   const chunks = [];
+  // Drain rejected uploads without retaining their content. Throwing midway
+  // through IncomingMessage's iterator can strand a socket during shutdown.
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 128 * 1024) reject(413, '请求内容过大。');
-    chunks.push(chunk);
+    if (size > maxBytes) {
+      chunks.length = 0;
+    } else chunks.push(chunk);
   }
+  if (size > maxBytes) reject(413, maxBytes === CONFIG_BODY_LIMIT ? '配置内容超过 2 MiB 保存上限，当前已保存配置未改动。请减少配置大小后重试。' : '请求内容超过 128 KiB 上限，请减少内容后重试。', { code: 'REQUEST_BODY_TOO_LARGE', limitBytes: maxBytes });
   let body;
   try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { reject(400, 'JSON 格式无效。'); }
@@ -89,7 +95,7 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
     if (!Array.isArray(previous)) throw new Error();
     logs.push(...previous.filter((entry) => entry && typeof entry.message === 'string' && ['info', 'success', 'warning', 'error'].includes(entry.level) && typeof entry.at === 'string').slice(0, 100).map((entry) => ({ id: String(entry.id), at: entry.at, level: entry.level, message: entry.message })));
   } catch { historyError = '历史记录读取失败；当前操作仍可继续。'; }
-  const runtime = { running: false, runId: null, startedAt: null, finishedAt: null, only: null, results: [], error: null };
+  const runtime = { running: false, runId: null, startedAt: null, finishedAt: null, only: null, currentJob: null, completedCount: 0, totalJobs: 0, results: [], error: null };
   const scheduler = { enabled: false, nextRunAt: null, resumeError: null };
   let timer = null, activeRun = null, mutationBusy = false, stopping = false, closePromise = null, url;
   let historyWrite = Promise.resolve();
@@ -182,20 +188,38 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
     if (typeof retry !== 'boolean') reject(400, 'retry 必须为布尔值。');
     if (runtime.running) reject(409, '已有任务正在执行，请等待完成。');
     clearTimeout(timer); timer = null; scheduler.nextRunAt = null;
-    Object.assign(runtime, { running: true, runId: randomUUID(), startedAt: new Date().toISOString(), finishedAt: null, only: only ?? null, results: [], error: null });
+    const selectedJobs = config.jobs.filter((job) => only ? job.id === only : job.enabled !== false);
+    Object.assign(runtime, { running: true, runId: randomUUID(), startedAt: new Date().toISOString(), finishedAt: null, only: only ?? null, currentJob: null, completedCount: 0, totalJobs: selectedJobs.length, results: [], error: null });
     const runId = runtime.runId;
     const env = environment();
     scheduler.resumeError = null;
     log('info', `开始${config.environment === 'staging' ? '测试' : '正式'}环境证书检查${only ? `：${only}` : '：全部任务'}。`);
-    activeRun = Promise.resolve().then(() => run(config, { only, ignoreBackoff: retry, env })).then((results) => {
-      runtime.results = redact(results);
-      for (const result of results) log(result.ok ? 'success' : 'error', `${result.id}：${ACTION_NAMES[result.action] ?? result.action}${result.error ? `；${result.error}` : ''}`);
-      for (const result of results) if (result.warning) log('warning', `${result.id}：${result.warning}`);
+    const completed = new Set();
+    const recordResult = (result) => {
+      if (completed.has(result.id)) return;
+      completed.add(result.id);
+      runtime.results.push(redact(result));
+      runtime.completedCount = completed.size;
+      log(result.ok ? 'success' : 'error', `${result.id}：${ACTION_NAMES[result.action] ?? result.action}${result.error ? `；${result.error}` : ''}`);
+      if (result.warning) log('warning', `${result.id}：${result.warning}`);
+    };
+    const onProgress = (event) => {
+      if (!runtime.running || runtime.runId !== runId) return;
+      if (event.type === 'job-start') runtime.currentJob = event.id;
+      else if (event.type === 'job-complete') {
+        recordResult(event.result);
+        if (runtime.currentJob === event.id) runtime.currentJob = null;
+      }
+    };
+    activeRun = Promise.resolve().then(() => run(config, { only, ignoreBackoff: retry, env, onProgress })).then((results) => {
+      // Injected runners may not report progress; include their final results
+      // while avoiding a second log entry for every normally completed job.
+      for (const result of results) recordResult(result);
     }).catch((error) => {
       runtime.error = redact(error.message);
       log('error', `执行失败：${error.message}`);
     }).finally(() => {
-      runtime.running = false; runtime.finishedAt = new Date().toISOString();
+      runtime.running = false; runtime.currentJob = null; runtime.finishedAt = new Date().toISOString();
       schedule(runtime.results, Boolean(runtime.error));
     });
     return { runId };
@@ -261,8 +285,8 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
         if (result.status === 429) response.setHeader('Retry-After', '60');
         return json(response, result.status, result.error ? { error: result.error } : { ok: true });
       }
-      if (request.method === 'GET' && ['/login', '/login.css', '/login.js'].includes(pathname)) {
-        const asset = { '/login': ['login.html', 'text/html; charset=utf-8'], '/login.css': ['login.css', 'text/css; charset=utf-8'], '/login.js': ['login.js', 'text/javascript; charset=utf-8'] }[pathname];
+      if (request.method === 'GET' && ['/login', '/login.css', '/login.js', '/brand.svg'].includes(pathname)) {
+        const asset = { '/login': ['login.html', 'text/html; charset=utf-8'], '/login.css': ['login.css', 'text/css; charset=utf-8'], '/login.js': ['login.js', 'text/javascript; charset=utf-8'], '/brand.svg': ['brand.svg', 'image/svg+xml; charset=utf-8'] }[pathname];
         const content = await fs.readFile(path.join(ROOT, 'web', asset[0]));
         response.writeHead(200, { 'Content-Type': asset[1] }); return response.end(content);
       }
@@ -282,7 +306,7 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
       if (request.method !== 'POST') reject(405, '不支持该请求方式。');
       const token = request.headers['x-csrf-token'];
       if (typeof token !== 'string' || Buffer.byteLength(token) !== Buffer.byteLength(csrfToken) || !timingSafeEqual(Buffer.from(token), Buffer.from(csrfToken))) reject(403, '操作凭证已失效，请刷新页面。');
-      const body = await readJsonBody(request);
+      const body = await readJsonBody(request, pathname === '/api/config' ? CONFIG_BODY_LIMIT : DEFAULT_BODY_LIMIT);
       if (stopping) reject(409, '工具正在退出。');
       if (mutationBusy) reject(409, '另一项操作正在保存，请稍后重试。');
       mutationBusy = true;
@@ -375,7 +399,7 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
         reject(404, '接口不存在。');
       } finally { mutationBusy = false; }
     } catch (error) {
-      if (!response.headersSent) json(response, error.status ?? 500, { error: error.status ? error.message : '本地操作失败，请检查文件权限或配置。' });
+      if (!response.headersSent) json(response, error.status ?? 500, { error: error.status ? error.message : '本地操作失败，请检查文件权限或配置。', ...(error instanceof ApiError ? error.details : {}) });
       else response.end();
     }
   });

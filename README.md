@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="web/brand.svg" width="72" height="72" alt="CertFlow 图标">
+
 # CertFlow
 
 **自托管 HTTPS 证书管理工作台**
@@ -7,7 +9,7 @@
 申请、续期、导出与本地部署，在一个深色工作台中完成。
 
 [![Verify and build](https://github.com/qianshulab/certflow/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.4.0-ff6633)](package.json)
+[![Version](https://img.shields.io/badge/version-0.4.1-ff6633)](package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-43853d)](package.json)
 [![Docker platform](https://img.shields.io/badge/Docker-linux%2Famd64-2496ed)](Dockerfile)
 
@@ -15,7 +17,7 @@
 
 </div>
 
-![CertFlow 深色证书管理工作台](docs/gui-preview.jpg)
+![CertFlow 深色证书管理工作台（0.4.0 版本界面）](docs/gui-preview.jpg)
 
 CertFlow 基于 [lego](https://github.com/go-acme/lego) 与 Let's Encrypt，为个人服务器、NAS 和自托管服务提供统一的证书管理界面。支持 Windows 本机运行和 Linux Docker 部署；配置、ACME 账户、证书与 DNS 凭据保存在运行设备上，无需外部数据库。
 
@@ -58,7 +60,7 @@ cp .env.example .env
 | --- | --- |
 | `CERTFLOW_PUBLIC_URL` | 必填。浏览器实际访问地址，例如 `http://192.168.1.100:3390`；替换为实际 NAS 地址 |
 | `CERTFLOW_ADMIN_PASSWORD` | 必填。自行设置至少 12 位管理密码；无默认密码 |
-| `CERTFLOW_IMAGE` | 默认固定为 `ghcr.io/qianshulab/certflow:0.4.0` |
+| `CERTFLOW_IMAGE` | 默认固定为 `ghcr.io/qianshulab/certflow:0.4.1` |
 | `CERTFLOW_PORT` | 默认 `3390`；修改后同步调整访问地址中的端口 |
 
 访问地址必须与浏览器使用的协议、主机和端口一致。`.env.example` 中的密码为空，未配置时 Compose 会拒绝启动。
@@ -150,7 +152,7 @@ npm start
 | [配置示例](cert-config.example.json) | 默认测试环境与任务结构 |
 | [Docker Nginx 示例](examples/nginx-docker-config.json) | 宿主机部署目录及容器重载命令 |
 | [安全说明](SECURITY.md) | 凭据、数据目录与管理入口保护 |
-| [版本验收记录](docs/RELEASE-0.4.0.md) | v0.4.0 的检查项目、测试证据与验证范围 |
+| [版本验收记录](docs/RELEASE-0.4.1.md) | v0.4.1 的检查项目、测试证据与验证范围 |
 
 ## 开发
 
