@@ -132,7 +132,7 @@ docker compose --env-file .env up -d
 | 提示凭据无法解密 | 是否完整恢复同一套 vault 和 key；是否误复制了 Windows DPAPI 文件 |
 | 数据目录无权限 | 自定义挂载目录是否由 UID/GID `1000:1000` 所有，`.certflow` 权限是否为 `700` |
 | 证书已续期但 NAS 仍提示即将过期 | UGOS 使用的仍是旧证书，需要重新导入并在服务配置选用新证书 |
-| 看到遗留运行锁 | 先确认没有其他实例或仍在执行的任务，再按主 README 的故障恢复说明处理 |
+| 看到遗留运行锁 | 先确认没有其他实例或仍在执行的任务，再按[故障恢复说明](configuration.md#故障恢复)处理 |
 
 运行状态可在 UGOS Docker 界面查看，或执行 `docker compose ps`。诊断日志可用 `docker compose logs --tail=100 certflow`；不要公开 `.env`、数据目录或完整备份。
 
