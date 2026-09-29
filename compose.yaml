@@ -1,0 +1,32 @@
+name: certflow
+
+services:
+  certflow:
+    image: ${CERTFLOW_IMAGE:-ghcr.io/qianshulab/certflow:0.4.0}
+    platform: linux/amd64
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 35m
+    user: "1000:1000"
+    environment:
+      CERTFLOW_HOST: 0.0.0.0
+      CERTFLOW_PORT: "3390"
+      CERTFLOW_CONFIG: /data/cert-config.json
+      CERTFLOW_PUBLIC_URL: ${CERTFLOW_PUBLIC_URL:?请在 .env 中填写 NAS 的实际访问地址}
+      CERTFLOW_ADMIN_PASSWORD: ${CERTFLOW_ADMIN_PASSWORD:?请在 .env 中设置至少 12 位管理密码}
+      TZ: Asia/Shanghai
+    ports:
+      - "${CERTFLOW_BIND_IP:-0.0.0.0}:${CERTFLOW_PORT:-3390}:3390"
+    volumes:
+      - certflow-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  certflow-data:
+    name: certflow-data

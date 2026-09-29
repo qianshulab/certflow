@@ -1,0 +1,16 @@
+{
+  "name": "https-cert-manager",
+  "version": "0.4.0",
+  "private": true,
+  "description": "基于 lego v5 的免费 HTTPS 证书申请、续期与本地部署工具",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "cli": "node cli.mjs",
+    "test": "node --test",
+    "check": "node --check cli.mjs && node --check src/core.mjs && node --check server.mjs && node --check web/app.js && node --check web/login.js"
+  }
+}

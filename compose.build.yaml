@@ -1,0 +1,7 @@
+# Optional source build: docker compose -f compose.yaml -f compose.build.yaml up -d --build
+services:
+  certflow:
+    image: certflow:local
+    build:
+      context: .
+      dockerfile: Dockerfile

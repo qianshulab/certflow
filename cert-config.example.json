@@ -1,0 +1,18 @@
+{
+  "email": "you@example.com",
+  "acceptTerms": false,
+  "environment": "staging",
+  "legoPath": "lego",
+  "dataDir": "./data",
+  "jobs": [
+    {
+      "id": "example",
+      "domains": ["example.com", "*.example.com"],
+      "challenge": {
+        "type": "dns",
+        "provider": "dnspod-token"
+      },
+      "deployment": null
+    }
+  ]
+}

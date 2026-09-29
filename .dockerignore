@@ -1,0 +1,11 @@
+# Only runtime source is permitted in the Docker build context.
+**
+!Dockerfile
+!package.json
+!server.mjs
+!cli.mjs
+!cert-config.example.json
+!src/
+!src/**
+!web/
+!web/**

@@ -1,0 +1,22 @@
+{
+  "email": "you@example.com",
+  "acceptTerms": false,
+  "environment": "production",
+  "legoPath": "lego",
+  "dataDir": "/srv/https-cert-manager/data",
+  "jobs": [
+    {
+      "id": "my-site",
+      "domains": ["example.com", "*.example.com"],
+      "challenge": {
+        "type": "dns",
+        "provider": "tencentcloud"
+      },
+      "deployment": {
+        "directory": "/srv/https-certs/my-site",
+        "checkCommand": ["docker", "exec", "web-nginx", "nginx", "-t"],
+        "reloadCommand": ["docker", "exec", "web-nginx", "nginx", "-s", "reload"]
+      }
+    }
+  ]
+}

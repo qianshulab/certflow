@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>CertFlow · HTTPS 证书管理</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <svg class="svg-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8.5 11.5 2.5 2.5 4.5-5"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="8" r="5"/><path d="m11.5 11.5 9 9M16 16l3-3M19 19l2-2"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7a9 9 0 0 0-15-1L3 9m0-6v6h6M4 17a9 9 0 0 0 15 1l2-3m0 6v-6h-6"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="m9 15 6-6m-5-3 2-2a5 5 0 0 1 7 7l-2 2M7 11l-2 2a5 5 0 0 0 7 7l2-2"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  </svg>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <aside class="sidebar">
+    <a class="brand" href="#overview" aria-label="CertFlow 首页"><span class="brand-symbol"><svg class="icon"><use href="#i-shield"/></svg></span><span>CertFlow<span class="brand-sub">HTTPS 证书管理</span></span></a>
+    <nav class="navigation" aria-label="主导航">
+      <button class="nav-item active" data-view="overview" aria-current="page"><svg class="icon"><use href="#i-grid"/></svg><span>证书工作台</span></button>
+      <button class="nav-item" data-view="config"><svg class="icon"><use href="#i-file"/></svg><span>证书配置</span></button>
+      <button class="nav-item" data-view="credentials"><svg class="icon"><use href="#i-key"/></svg><span>DNS 凭据</span></button>
+      <button class="nav-item" data-view="exports"><svg class="icon"><use href="#i-download"/></svg><span>导出与部署</span></button>
+    </nav>
+    <div class="sidebar-footer"><span class="connection-dot" id="connection-dot"></span><div><strong id="connection-label">正在连接服务</strong><small id="app-version">证书管理服务</small></div><span class="local-mark">LOCAL</span></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong id="breadcrumb-current">工作台</strong></div><div class="topbar-right"><span id="environment-badge" class="pill amber-pill">正在读取环境</span><span class="topbar-divider"></span><span class="avatar" aria-label="本地用户">本</span></div></header>
+    <main id="main" tabindex="-1">
+      <div id="connection-banner" class="banner danger" role="alert" hidden></div>
+      <div id="config-error-banner" class="banner warning" role="alert" hidden></div><div id="draft-banner" class="banner draft-banner" hidden><span>证书配置有未保存的修改，切换页面会保留草稿。</span><button type="button" class="text-button" data-goto="config">继续编辑</button></div>
+      <section id="view-overview" class="view">
+        <div class="page-heading"><div><h1 tabindex="-1">证书工作台</h1><p>查看签发状态、有效期与部署结果。</p></div><div class="button-group"><button class="button secondary" id="preflight-all" disabled><svg class="icon"><use href="#i-check"/></svg>检查运行环境</button><button class="button primary" id="run-all" disabled><svg class="icon"><use href="#i-refresh"/></svg><span>检查并申请 / 续期</span></button></div></div>
+        <div class="metrics" aria-label="证书统计">
+          <article class="metric"><div><span class="metric-label">证书任务</span><div class="metric-value" id="metric-total">—</div><span class="metric-caption" id="metric-total-caption">正在读取配置</span></div><span class="metric-icon blue"><svg class="icon"><use href="#i-file"/></svg></span></article>
+          <article class="metric"><div><span class="metric-label">有效证书</span><div class="metric-value" id="metric-valid">—<small>份</small></div><span class="metric-caption" id="metric-valid-caption">以服务端证书为准</span></div><span class="metric-icon teal"><svg class="icon"><use href="#i-shield"/></svg></span></article>
+          <article class="metric"><div><span class="metric-label">需要关注</span><div class="metric-value" id="metric-attention">—<small>项</small></div><span class="metric-caption" id="metric-attention-caption">读取任务状态中</span></div><span class="metric-icon amber"><svg class="icon"><use href="#i-clock"/></svg></span></article>
+        </div>
+        <section class="onboarding panel" id="onboarding"><div class="section-heading"><div><span class="section-kicker">GET STARTED</span><h2>从第一张证书开始</h2></div><span class="pill blue-pill" id="setup-progress">准备工作</span></div><div class="setup-steps" id="setup-steps"></div></section>
+        <div class="overview-columns"><div class="overview-primary">
+          <section class="panel certificate-panel"><div class="section-heading"><div class="title-with-count"><h2>我的证书</h2><span class="count-badge" id="jobs-count">0</span></div><button class="text-button" data-goto="config">管理任务 <svg class="icon"><use href="#i-arrow"/></svg></button></div><div class="certificate-toolbar"><div class="search-field"><label class="sr-only" for="certificate-search">搜索域名或任务</label><input id="certificate-search" type="search" placeholder="搜索域名或任务 ID" autocomplete="off"></div><label class="sr-only" for="certificate-filter">筛选证书状态</label><select id="certificate-filter"><option value="all">全部状态</option><option value="attention">需要关注</option><option value="pending">待申请</option><option value="valid">有效证书</option><option value="expiring">30 天内到期</option></select><label class="sr-only" for="certificate-sort">排序方式</label><select id="certificate-sort"><option value="attention">优先待处理</option><option value="expiry">按到期时间</option><option value="name">按域名名称</option></select></div><p id="certificate-results" class="list-summary" role="status"></p><div id="certificate-list" class="certificate-list"><div class="empty-state loading"><svg class="icon"><use href="#i-refresh"/></svg><p>正在读取证书状态…</p></div></div></section>
+          <section class="panel activity-panel"><div class="section-heading"><h2>活动记录</h2><label class="sr-only" for="log-filter">筛选活动记录</label><select id="log-filter" class="compact-select"><option value="all">全部记录</option><option value="error">仅错误 / 警告</option></select></div><div id="activity-list" class="activity-list"><p class="quiet-empty">暂无活动记录</p></div></section>
+        </div><div class="overview-secondary">
+          <section class="panel automation-panel"><div class="section-heading"><span class="small-icon teal"><svg class="icon"><use href="#i-refresh"/></svg></span><span id="scheduler-badge" class="pill neutral-pill">未开启</span></div><h2>自动续期</h2><p>定时检查，由 ACME 客户端判断合适的续期时间。</p><div class="switch-row"><label for="scheduler-toggle">自动检查与续期</label><input id="scheduler-toggle" class="switch" type="checkbox" role="switch" disabled></div><p id="scheduler-detail" class="fine-print">开启后立即检查。需保持此工具服务运行。</p><div class="divider"></div><div class="automation-footnote"><svg class="icon"><use href="#i-info"/></svg><span>新证书生成后，已配置的 Nginx 部署会同步更新；NAS 管理页面需手动导入。</span></div></section>
+          <section class="target-panel"><h3>部署说明</h3><dl class="deployment-summary"><dt>绿联 NAS 管理页面</dt><dd>续期后下载新证书，导入 UGOS。</dd><dt>Nginx / Docker 服务</dt><dd>配置部署目录与重载命令后，续期时自动更新。</dd></dl><button class="text-button" data-goto="exports">查看导出与部署 <svg class="icon"><use href="#i-arrow"/></svg></button></section>
+        </div></div>
+        <div id="runtime-status" class="runtime-bar" role="status" hidden></div>
+      </section>
+
+      <section id="view-config" class="view" hidden>
+        <div class="page-heading"><div><div class="eyebrow">CERTIFICATE SETTINGS</div><h1 tabindex="-1">证书与签发设置</h1><p>填写域名和验证方式。保存配置后，再手动开始申请。</p></div><button class="button secondary" id="preview-plan">查看执行计划</button></div>
+        <form id="config-form" novalidate><div id="validation-summary" class="banner danger" role="alert" hidden></div><div class="panel form-panel"><div class="section-heading"><div><h2>账户与签发环境</h2><p class="section-description">建议先使用测试环境验证流程，再切换正式环境。</p></div><span class="pill neutral-pill">Let's Encrypt</span></div><div class="form-grid"><div class="field"><label for="config-email">联系邮箱 <span class="required">*</span></label><input id="config-email" type="email" autocomplete="email" placeholder="name@yourdomain.com" required><small>用于 ACME 账户联系信息。</small></div><div class="field"><label for="config-environment">签发环境</label><select id="config-environment"><option value="staging">测试环境 · 先验证流程</option><option value="production">正式环境 · 浏览器信任</option></select><small id="environment-help">测试证书不被浏览器信任，不能自动部署。</small></div></div><label class="checkbox-line"><input type="checkbox" id="config-terms"><span>我已阅读并同意 <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer">Let's Encrypt 服务条款<svg class="icon inline-icon"><use href="#i-link"/></svg></a>，允许此工具申请和续期证书。</span></label></div>
+        <div class="standalone-heading"><div><h2>证书任务</h2><p>同一张证书可以包含多个域名，也可以包含通配符。</p></div><button type="button" class="button secondary" id="add-job"><svg class="icon"><use href="#i-plus"/></svg>新增任务</button></div>
+        <div class="editor-workspace"><nav id="job-selector" class="job-selector" aria-label="选择编辑的证书任务"></nav><div id="job-editors"></div></div>
+        <details class="panel advanced-global"><summary>高级设置<span>客户端与数据存储</span></summary><div class="form-grid"><div class="field"><label for="config-lego">lego 客户端路径</label><input id="config-lego" placeholder="lego" spellcheck="false"><small>使用已安装的 lego v5 客户端。</small></div><div class="field"><label for="config-data">证书数据目录</label><input id="config-data" placeholder="./data" spellcheck="false"><small>相对路径以配置文件所在目录为基准。</small></div></div><p class="fine-print" id="config-path"></p></details>
+        <div class="save-bar"><span id="save-hint">保存不会修改 DNS 或申请证书。</span><div class="button-group"><button type="button" class="button secondary" id="reset-config">撤销修改</button><button type="submit" class="button primary" id="save-config"><svg class="icon"><use href="#i-check"/></svg>保存配置</button></div></div></form>
+      </section>
+
+      <section id="view-credentials" class="view" hidden>
+        <div class="page-heading"><div><div class="eyebrow">DNS CREDENTIALS</div><h1 tabindex="-1">DNS 凭据管理</h1><p>通过 DNS 验证域名归属，无需开放网站的 80 端口。</p></div><span id="credential-storage-badge" class="pill teal-pill"><svg class="icon"><use href="#i-key"/></svg>保存在服务端</span></div>
+        <div id="credential-storage-notice" class="banner info"><svg class="icon"><use href="#i-info"/></svg><div id="credential-storage-text">凭据默认长期保存在服务端，重启工具后自动读取。已保存的密钥不会回显。</div></div><div class="credentials-layout"><nav id="provider-selector" class="provider-selector" aria-label="选择 DNS 服务商"></nav>
+        <div id="credential-panels" class="credential-panels"></div></div>
+        <div class="credential-help"><h3>DNSPod 两种凭据如何选择？</h3><p>在 DNSPod「创建 Token」页面生成的 ID 和 Token，请选择 <strong>DNSPod · ID / Token</strong>。在腾讯云访问管理生成的 SecretId 和 SecretKey，请选择 <strong>腾讯云 DNSPod · 云 API</strong>。证书任务中的服务商必须与此处一致。</p></div>
+      </section>
+
+      <section id="view-exports" class="view" hidden>
+        <div class="page-heading"><div><div class="eyebrow">EXPORT & DEPLOY</div><h1 tabindex="-1">导出与部署</h1><p>下载已签发证书，或为 Nginx 和 Docker 配置自动部署。</p></div></div>
+        <section class="panel form-panel"><div class="section-heading"><div><h2>证书文件</h2><p class="section-description">续期生成的是新证书，使用证书的服务也需要更新。</p></div><span class="small-icon blue"><svg class="icon"><use href="#i-download"/></svg></span></div><div class="field export-picker"><label for="export-job">选择证书任务</label><select id="export-job"></select></div><div id="export-status" class="banner info"></div><div id="export-files" class="export-files"></div></section>
+        <div class="deployment-guides"><section class="panel guide-panel"><span class="guide-icon teal"><svg class="icon"><use href="#i-server"/></svg></span><span class="pill neutral-pill">手动导入</span><h2>绿联 DXP4800 管理页面</h2><p>本工具生成导入文件。目前管理页面证书需要在 UGOS 中手动更新。</p><ol class="instruction-list"><li><span>1</span><div>在 NAS 控制面板中打开<strong>安全性 → 证书</strong>，选择导入证书。</div></li><li><span>2</span><div>分别选择<strong>cert.pem</strong>（证书）、<strong>privkey.pem</strong>（私钥）和 <strong>chain.pem</strong>（中间证书）。</div></li><li><span>3</span><div>按 UGOS 页面提示应用证书。每次续期后，重新导入这组新文件。</div></li></ol><a class="text-button" href="https://support.ugnas.com/detail/article/zh-CN/107" target="_blank" rel="noopener noreferrer">查看绿联官方导入说明 <svg class="icon"><use href="#i-link"/></svg></a></section>
+        <section class="panel guide-panel"><span class="guide-icon blue"><svg class="icon"><use href="#i-refresh"/></svg></span><span class="pill teal-pill">支持自动部署</span><h2>宝塔、Nginx 与 Docker</h2><p>工具需要运行在能访问目标目录、执行重载命令的主机上。</p><ol class="instruction-list"><li><span>1</span><div>在证书任务中展开<strong>自动部署</strong>，填写目标目录和检查、重载命令。</div></li><li><span>2</span><div>让 Nginx 使用该目录中的 <strong>fullchain.pem</strong> 和 <strong>privkey.pem</strong>。Docker 挂载整个证书目录。</div></li><li><span>3</span><div>续期成功后会替换证书、检查配置并重载服务；失败时尝试回滚。</div></li></ol><button class="text-button" data-goto="config">配置自动部署 <svg class="icon"><use href="#i-arrow"/></svg></button></section></div>
+      </section>
+      <footer class="page-footer"><span><svg class="icon"><use href="#i-shield"/></svg> CertFlow · 证书管理工作台</span><span>Let's Encrypt / ACME v2</span></footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="plan-dialog"><div class="dialog-heading"><div><span class="eyebrow">EXECUTION PREVIEW</span><h2>执行计划</h2></div><button class="icon-button" id="close-plan" aria-label="关闭执行计划"><svg class="icon"><use href="#i-close"/></svg></button></div><p>仅预览已保存的配置，不会访问 ACME 或修改 DNS。</p><pre id="plan-content"></pre><div class="dialog-footer"><button class="button primary" id="close-plan-footer">完成</button></div></dialog>
+<dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description"><h2 id="confirm-title"></h2><p id="confirm-description"></p><div class="dialog-footer button-group"><button type="button" id="confirm-cancel" class="button secondary" autofocus>取消</button><button type="button" id="confirm-action" class="button primary">确认</button></div></dialog>
+  <dialog id="preflight-dialog" aria-labelledby="preflight-title"><div class="dialog-heading"><div><span class="eyebrow">PREFLIGHT CHECK</span><h2 id="preflight-title">运行环境检查</h2></div><button class="icon-button" id="close-preflight" aria-label="关闭运行环境检查"><svg class="icon"><use href="#i-close"/></svg></button></div><p>检查已保存的配置、客户端和目录权限；不会申请证书或修改 DNS。</p><p id="preflight-summary" role="status"></p><div id="preflight-results" class="preflight-results"></div><div class="dialog-footer"><button class="button primary" id="close-preflight-footer">完成</button></div></dialog>
+</body>
+</html>
