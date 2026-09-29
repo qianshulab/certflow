@@ -401,10 +401,12 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
       stopping = true; stopSchedule();
       closePromise = (async () => {
         if (activeRun) await activeRun;
+        // An already-admitted config/credential request can queue another log
+        // while shutdown waits. Drain those requests before flushing history.
+        await new Promise((resolve, rejectClose) => server.close((error) => error ? rejectClose(error) : resolve()));
         await historyWrite;
         credentials.clear(); secretValues.clear();
         access.clear();
-        await new Promise((resolve, rejectClose) => server.close((error) => error ? rejectClose(error) : resolve()));
       })();
     }
     return closePromise;
