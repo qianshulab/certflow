@@ -17,10 +17,18 @@
 | 批量执行 | API 与自动化测试通过 | 13 个假任务中 12 个启用，逐项观察 `currentJob` / 完成数 / 结果；暂停任务未执行；真实串行执行器经 HTTP API 测试，日志不重复 |
 | 长内容、窄屏与滚动 | 源码检查通过；浏览器视觉待验 | 任务名称和域名截断并提供完整提示；证书表保留纵横滚动；保存栏回到文档流；移动端任务导航改为有限高度的纵向滚动 |
 | 应用标识 | 资源与路由检查通过；视觉待验 | 新 SVG 通过 XML 解析；主页面、登录页与 favicon 共用；未登录可读取固定 SVG 路由，路径穿越被拒绝 |
-| 回归与容器 | 本机测试通过；GitHub 构建待验 | `npm run check` 通过；`npm test` 106 项中 104 通过、0 失败、2 项因本机平台条件跳过；Linux 容器和公开镜像结果以本版本 Actions 记录为准 |
+| 回归与容器 | 本机、CI 与容器检查通过 | `npm run check` 通过；本机 `npm test` 106 项中 104 通过、0 失败、2 项因本机平台条件跳过；CI 在 Windows / Linux 安装经校验的 lego 并通过测试，Linux amd64 容器通过隔离冒烟检查 |
 
 ## 未完成的视觉验收
 
 桌面浏览器对隔离测试页 `http://127.0.0.1:3392` 返回 `ERR_BLOCKED_BY_CLIENT`。因此没有把 13 / 50 / 100 任务的实际像素布局、手机视口、键盘焦点及保存区可见性标为浏览器验收通过。上述检查须在能访问隔离测试页的浏览器中复验，尤其是长列表滚动到中部后连续刷新时的位置、搜索空结果与窄屏保存操作。
 
 真实 DNS 权限、CA 签发、UGOS 管理页导入，以及目标服务检查和重载仍需在实际环境验证。自动化测试不构成这些外部集成的认证。
+
+## 发布证据
+
+- 源码提交：[`01b8412`](https://github.com/qianshulab/certflow/commit/01b8412d505fe82eba592582c6489e4457e43509)，标签 `v0.4.1`。
+- [主分支构建](https://github.com/qianshulab/certflow/actions/runs/36605348859)与[标签发布构建](https://github.com/qianshulab/certflow/actions/runs/36605614981)均通过 Windows、Linux 测试及 Linux amd64 容器检查。
+- 镜像：`ghcr.io/qianshulab/certflow:0.4.1`，固定摘要：`ghcr.io/qianshulab/certflow@sha256:403365f356da7774a036afc04b539450254181d670cbd63c974842f1b62a7f94`。匿名读取 manifest 返回 200，摘要与已测试镜像一致。
+- 容器冒烟：登录、受保护状态、加密凭据和配置在两次重启后仍可读取；以非 root、只读运行时执行，使用动态健康检查端口。测试容器没有外部网络，也没有触发 ACME 请求。
+- [机器可读镜像记录](releases/v0.4.1-image.json)包含工作流、平台、镜像 ID、公开访问及检查项。验收日期：2026-09-30（Asia/Shanghai）。

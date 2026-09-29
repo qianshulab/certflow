@@ -1,0 +1,22 @@
+{
+  "version": "0.4.1",
+  "sourceCommit": "01b8412d505fe82eba592582c6489e4457e43509",
+  "workflowRun": "https://github.com/qianshulab/certflow/actions/runs/36605614981",
+  "platform": "linux/amd64",
+  "imageId": "sha256:b411d81bd71a7736337d8b779aa3fc3cc4911c071f0ef4834f3f494bd1b72076",
+  "registryImage": "ghcr.io/qianshulab/certflow:0.4.1",
+  "registryDigest": "ghcr.io/qianshulab/certflow@sha256:403365f356da7774a036afc04b539450254181d670cbd63c974842f1b62a7f94",
+  "publicAccess": {
+    "public": true,
+    "status": 200,
+    "digest": "ghcr.io/qianshulab/certflow@sha256:403365f356da7774a036afc04b539450254181d670cbd63c974842f1b62a7f94"
+  },
+  "verifiedAt": "2026-09-29T17:33:51.225Z",
+  "checks": [
+    "windows-and-linux-node-tests",
+    "real-lego-exec-bridge-integration",
+    "network-isolated-container-smoke",
+    "nonroot-read-only-runtime",
+    "encrypted-credentials-and-config-after-two-restarts"
+  ]
+}
