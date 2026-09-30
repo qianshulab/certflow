@@ -159,7 +159,7 @@ npm start
 | [配置示例](cert-config.example.json) | 默认测试环境与任务结构 |
 | [Docker Nginx 示例](examples/nginx-docker-config.json) | 宿主机部署目录及容器重载命令 |
 | [安全说明](SECURITY.md) | 凭据、数据目录与管理入口保护 |
-| [版本验收记录](docs/RELEASE-0.5.1.md) | v0.5.1 的检查项目、测试证据与验证范围 |
+| [版本验收记录](docs/RELEASE-0.5.2.md) | v0.5.2 的检查项目、测试证据与验证范围 |
 
 ## 开发
 
