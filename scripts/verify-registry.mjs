@@ -35,7 +35,7 @@ export async function verifyPublicImage(image, tag, expectedDigest) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const result = await verifyPublicImage(process.argv[2] ?? 'ghcr.io/qianshulab/certflow', process.argv[3] ?? '0.4.1', process.argv[4]);
+  const result = await verifyPublicImage(process.argv[2] ?? 'ghcr.io/qianshulab/certflow', process.argv[3] ?? '0.4.2', process.argv[4]);
   console.log(JSON.stringify(result, null, 2));
   if (!result.public) process.exitCode = 1;
 }

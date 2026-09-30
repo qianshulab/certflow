@@ -9,7 +9,7 @@
 申请、续期、导出与本地部署，在一个深色工作台中完成。
 
 [![Verify and build](https://github.com/qianshulab/certflow/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.4.1-ff6633)](package.json)
+[![Version](https://img.shields.io/badge/version-0.4.2-ff6633)](package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-43853d)](package.json)
 [![Docker platform](https://img.shields.io/badge/Docker-linux%2Famd64-2496ed)](Dockerfile)
 
@@ -30,6 +30,7 @@ CertFlow 基于 [lego](https://github.com/go-acme/lego) 与 Let's Encrypt，为�
 | **DNS 凭据管理** | DNSPod ID / Token、腾讯云 DNSPod、Cloudflare、阿里云 DNS；支持加密长期保存 |
 | **导出与部署** | 四种 PEM 文件、整套 ZIP 下载；本地目录更新、配置检查、服务重载与失败回滚 |
 | **运行检查** | 申请前检查客户端、凭据格式、目录权限、运行锁与本地状态 |
+| **过程可见** | 申请期间展示当前任务、可信执行阶段与持续时间；失败只显示脱敏诊断 |
 | **日常操作** | 单任务暂停、部署重试、活动记录、表单校验与未保存草稿保护 |
 
 暂停的任务不会参与自动续期或“检查全部”，仍可单独手动执行。运行检查不创建 DNS 记录，不申请证书，也不执行服务重载。
@@ -60,7 +61,7 @@ cp .env.example .env
 | --- | --- |
 | `CERTFLOW_PUBLIC_URL` | 必填。浏览器实际访问地址，例如 `http://192.168.1.100:3390`；替换为实际 NAS 地址 |
 | `CERTFLOW_ADMIN_PASSWORD` | 必填。自行设置至少 12 位管理密码；无默认密码 |
-| `CERTFLOW_IMAGE` | 默认固定为 `ghcr.io/qianshulab/certflow:0.4.1` |
+| `CERTFLOW_IMAGE` | 默认固定为 `ghcr.io/qianshulab/certflow:0.4.2` |
 | `CERTFLOW_PORT` | 默认 `3390`；修改后同步调整访问地址中的端口 |
 
 访问地址必须与浏览器使用的协议、主机和端口一致。`.env.example` 中的密码为空，未配置时 Compose 会拒绝启动。
@@ -76,6 +77,8 @@ docker compose --env-file .env up -d
 在浏览器打开配置的 `CERTFLOW_PUBLIC_URL`，使用管理密码登录。UGOS 也可通过 Docker「项目」导入 Compose，详细步骤见 [NAS Docker 部署指南](docs/docker-nas.md)。
 
 默认使用命名卷 **`certflow-data`** 保存数据，普通容器重建会继续使用原数据。服务采用 `restart: unless-stopped`；关闭浏览器不会停止后台续期。镜像发布与架构信息以 [GHCR 包页面](https://github.com/users/qianshulab/packages/container/package/certflow)及 [Actions](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)记录为准。
+
+如果 NAS 的 Docker bridge 网络无法访问 DNSPod 或证书机构，可采用[主机网络部署方案](docs/docker-nas.md#主机网络备用方案)。该方案将管理服务绑定到指定的 NAS 局域网 IPv4 地址。
 
 ### Windows / 本机运行
 
@@ -152,7 +155,7 @@ npm start
 | [配置示例](cert-config.example.json) | 默认测试环境与任务结构 |
 | [Docker Nginx 示例](examples/nginx-docker-config.json) | 宿主机部署目录及容器重载命令 |
 | [安全说明](SECURITY.md) | 凭据、数据目录与管理入口保护 |
-| [版本验收记录](docs/RELEASE-0.4.1.md) | v0.4.1 的检查项目、测试证据与验证范围 |
+| [版本验收记录](docs/RELEASE-0.4.2.md) | v0.4.2 的检查项目、测试证据与验证范围 |
 
 ## 开发
 

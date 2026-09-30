@@ -85,7 +85,7 @@ export function dnsPodExecEnvironment(env, directory, contact) {
     // A file URL keeps spaces and Unicode paths intact on Windows and POSIX.
     EXEC_PATH: process.execPath,
     EXEC_MODE: '',
-    NODE_OPTIONS: `--import=${new URL('./dnspod-preload.mjs', import.meta.url).href}`,
+    NODE_OPTIONS: `--dns-result-order=ipv4first --import=${new URL('./dnspod-preload.mjs', import.meta.url).href}`,
     CERTFLOW_DNSPOD_STATE_DIR: path.resolve(directory),
     CERTFLOW_DNSPOD_CONTACT: contact,
     EXEC_PROPAGATION_TIMEOUT: '600',

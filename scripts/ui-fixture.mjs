@@ -92,9 +92,22 @@ async function simulateRun(config, { only, onProgress } = {}) {
   if (config.environment !== 'staging' || jobs.some(job => job.challenge.type !== 'http' || job.deployment || job.domains.some(domain => !domain.endsWith('.test')))) throw new Error('UI fixture: 模拟执行仅接受测试环境、.test 域名、HTTP 验证及无部署的任务。');
   const results = [];
   for (const [index, job] of jobs.entries()) {
+    const simulatedFailure = (config.jobs.indexOf(job) + 1) % 11 === 0;
     await onProgress?.({ type: 'job-start', id: job.id, index: index + 1, total: jobs.length });
-    await new Promise(resolve => setTimeout(resolve, stepMs));
-    const result = (index + 1) % 11 === 0
+    const shortStep = Math.max(1, Math.floor(stepMs / 10));
+    const reportPhase = async (phase, delayMs = shortStep) => {
+      await onProgress?.({ type: 'job-phase', id: job.id, index: index + 1, total: jobs.length, phase });
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    };
+    await reportPhase('preparing');
+    await reportPhase('credentials');
+    await reportPhase('client');
+    await reportPhase('acme', Math.max(1, stepMs - 5 * shortStep));
+    if (!simulatedFailure) {
+      await reportPhase('certificate');
+      await reportPhase('export');
+    }
+    const result = simulatedFailure
       ? { id: job.id, ok: false, action: 'failed', error: 'UI fixture: 模拟失败结果，未联系 CA / DNS，也未生成证书。' }
       : { id: job.id, ok: true, action: 'unchanged', warning: 'UI fixture: 模拟完成结果，未联系 CA / DNS，也未生成证书。' };
     results.push(result);

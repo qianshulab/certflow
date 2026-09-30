@@ -14,7 +14,7 @@ import { preflight } from './src/preflight.mjs';
 import { createZip } from './src/zip.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.4.1';
+const VERSION = '0.4.2';
 const PROVIDERS = {
   'dnspod-token': ['DNSPOD_API_ID', 'DNSPOD_API_TOKEN'],
   tencentcloud: ['TENCENTCLOUD_SECRET_ID', 'TENCENTCLOUD_SECRET_KEY'],
@@ -23,6 +23,8 @@ const PROVIDERS = {
 };
 const EXPORT_NAMES = { certificate: 'cert.pem', chain: 'chain.pem', fullchain: 'fullchain.pem', privateKey: 'privkey.pem' };
 const ACTION_NAMES = { issued: '签发并导出完成', renewed: '续期并导出完成', deployed: '证书部署完成', unchanged: '检查完成，证书无需续期', backoff: '等待下次重试', failed: '执行失败' };
+const PROGRESS_PHASES = new Set(['preparing', 'credentials', 'client', 'acme', 'certificate', 'export', 'deployment']);
+const MAX_PHASE_HISTORY = 20;
 const DEFAULT_BODY_LIMIT = 128 * 1024;
 const CONFIG_BODY_LIMIT = 2 * 1024 * 1024;
 const hash = (data) => createHash('sha256').update(data).digest('hex');
@@ -95,7 +97,9 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
     if (!Array.isArray(previous)) throw new Error();
     logs.push(...previous.filter((entry) => entry && typeof entry.message === 'string' && ['info', 'success', 'warning', 'error'].includes(entry.level) && typeof entry.at === 'string').slice(0, 100).map((entry) => ({ id: String(entry.id), at: entry.at, level: entry.level, message: entry.message })));
   } catch { historyError = '历史记录读取失败；当前操作仍可继续。'; }
-  const runtime = { running: false, runId: null, startedAt: null, finishedAt: null, only: null, currentJob: null, completedCount: 0, totalJobs: 0, results: [], error: null };
+  const runtime = { running: false, runId: null, startedAt: null, finishedAt: null, only: null,
+    currentJob: null, currentPhase: null, phaseStartedAt: null, phaseHistory: [],
+    completedCount: 0, totalJobs: 0, results: [], error: null };
   const scheduler = { enabled: false, nextRunAt: null, resumeError: null };
   let timer = null, activeRun = null, mutationBusy = false, stopping = false, closePromise = null, url;
   let historyWrite = Promise.resolve();
@@ -189,7 +193,9 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
     if (runtime.running) reject(409, '已有任务正在执行，请等待完成。');
     clearTimeout(timer); timer = null; scheduler.nextRunAt = null;
     const selectedJobs = config.jobs.filter((job) => only ? job.id === only : job.enabled !== false);
-    Object.assign(runtime, { running: true, runId: randomUUID(), startedAt: new Date().toISOString(), finishedAt: null, only: only ?? null, currentJob: null, completedCount: 0, totalJobs: selectedJobs.length, results: [], error: null });
+    Object.assign(runtime, { running: true, runId: randomUUID(), startedAt: new Date().toISOString(), finishedAt: null,
+      only: only ?? null, currentJob: null, currentPhase: null, phaseStartedAt: null, phaseHistory: [],
+      completedCount: 0, totalJobs: selectedJobs.length, results: [], error: null });
     const runId = runtime.runId;
     const env = environment();
     scheduler.resumeError = null;
@@ -205,10 +211,27 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
     };
     const onProgress = (event) => {
       if (!runtime.running || runtime.runId !== runId) return;
-      if (event.type === 'job-start') runtime.currentJob = event.id;
+      if (!selectedJobs.some((job) => job.id === event.id)) return;
+      if (event.type === 'job-start') {
+        runtime.currentJob = event.id;
+        runtime.currentPhase = null;
+        runtime.phaseStartedAt = null;
+      }
+      else if (event.type === 'job-phase' && runtime.currentJob === event.id && PROGRESS_PHASES.has(event.phase)) {
+        if (runtime.currentPhase === event.phase) return;
+        const at = new Date().toISOString();
+        runtime.currentPhase = event.phase;
+        runtime.phaseStartedAt = at;
+        runtime.phaseHistory.unshift({ id: randomUUID(), at, jobId: event.id, phase: event.phase });
+        if (runtime.phaseHistory.length > MAX_PHASE_HISTORY) runtime.phaseHistory.length = MAX_PHASE_HISTORY;
+      }
       else if (event.type === 'job-complete') {
         recordResult(event.result);
-        if (runtime.currentJob === event.id) runtime.currentJob = null;
+        if (runtime.currentJob === event.id) {
+          runtime.currentJob = null;
+          runtime.currentPhase = null;
+          runtime.phaseStartedAt = null;
+        }
       }
     };
     activeRun = Promise.resolve().then(() => run(config, { only, ignoreBackoff: retry, env, onProgress })).then((results) => {
@@ -219,7 +242,8 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
       runtime.error = redact(error.message);
       log('error', `执行失败：${error.message}`);
     }).finally(() => {
-      runtime.running = false; runtime.currentJob = null; runtime.finishedAt = new Date().toISOString();
+      runtime.running = false; runtime.currentJob = null; runtime.currentPhase = null; runtime.phaseStartedAt = null;
+      runtime.finishedAt = new Date().toISOString();
       schedule(runtime.results, Boolean(runtime.error));
     });
     return { runId };

@@ -1,10 +1,13 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 
 // Remote access uses one explicitly configured origin. Proxy forwarding headers
 // are deliberately not used to decide whom to trust.
-export function createAccess({ host = '127.0.0.1', publicUrl, adminPassword } = {}) {
-  if (!['127.0.0.1', '0.0.0.0'].includes(host)) throw new Error('监听地址只支持 127.0.0.1 或 0.0.0.0。');
-  const remote = host === '0.0.0.0';
+export function createAccess({ host = '127.0.0.1', publicUrl, adminPassword,
+  requireSpecificHost = process.env.CERTFLOW_REQUIRE_SPECIFIC_HOST === '1' } = {}) {
+  if (isIP(host) !== 4) throw new Error('监听地址必须是 IPv4 地址。');
+  if (requireSpecificHost && (host === '0.0.0.0' || host.startsWith('127.'))) throw new Error('主机网络模式必须绑定 NAS 的具体局域网 IPv4 地址。');
+  const remote = host !== '127.0.0.1';
   if (remote && !publicUrl) throw new Error('Docker / 网络访问必须设置 CERTFLOW_PUBLIC_URL 为浏览器使用的完整地址。');
   let publicOrigin;
   if (publicUrl) {

@@ -140,6 +140,7 @@ test('the actual shell-free Node executable bridge handles Windows/Unix paths wi
   const env = dnsPodExecEnvironment({ ...process.env, DNSPOD_API_ID: '7', DNSPOD_API_TOKEN: 'test-placeholder-only' }, directory, 'operator@example.com');
   assert.equal(env.EXEC_PATH, process.execPath);
   assert.equal(env.EXEC_MODE, '');
+  assert.match(env.NODE_OPTIONS, /^--dns-result-order=ipv4first --import=file:/);
   assert.equal(process.env.NODE_OPTIONS, originalOptions);
   const result = await new Promise((resolve, reject) => {
     const child = spawn(env.EXEC_PATH, ['cleanup', fqdn, valueA], { env, cwd: directory, shell: false, windowsHide: true });

@@ -99,6 +99,8 @@ test('GUI state provides a CSRF token and a file version without issuing a certi
   assert.match(app.state.configVersion, /^[a-f0-9]{64}$/);
   assert.equal(app.state.config.email, 'operator@example.com');
   assert.equal(app.state.runtime.running, false);
+  assert.equal(app.state.runtime.currentPhase, null);
+  assert.deepEqual(app.state.runtime.phaseHistory, []);
   assert.equal(app.state.scheduler.enabled, false);
   const response = await fetch(`${app.url}/api/state`);
   assert.match(response.headers.get('cache-control'), /no-store/);
@@ -309,6 +311,10 @@ test('the real serial runner exposes current and completed jobs immediately and 
     const partial = await (await fetch(`${app.url}/api/state`)).json();
     assert.equal(partial.runtime.running, true);
     assert.equal(partial.runtime.currentJob, 'second');
+    assert.equal(partial.runtime.currentPhase, 'acme');
+    assert.ok(Date.parse(partial.runtime.phaseStartedAt) > 0);
+    assert.deepEqual(partial.runtime.phaseHistory[0].phase, 'acme');
+    assert.equal(partial.runtime.phaseHistory[0].jobId, 'second');
     assert.equal(partial.runtime.completedCount, 1);
     assert.equal(partial.runtime.totalJobs, 2);
     assert.deepEqual(partial.runtime.results.map(result => [result.id, result.ok]), [['first', true]]);
@@ -318,11 +324,54 @@ test('the real serial runner exposes current and completed jobs immediately and 
   await until(async () => !(await (await fetch(`${app.url}/api/state`)).json()).runtime.running, 'batch must finish');
   const finished = await (await fetch(`${app.url}/api/state`)).json();
   assert.equal(finished.runtime.currentJob, null);
+  assert.equal(finished.runtime.currentPhase, null);
+  assert.equal(finished.runtime.phaseStartedAt, null);
+  assert.ok(finished.runtime.phaseHistory.length > 0);
   assert.equal(finished.runtime.completedCount, 2);
   assert.equal(finished.runtime.totalJobs, 2);
   assert.deepEqual(finished.runtime.results.map(result => [result.id, result.ok]), [['first', true], ['second', false]]);
   assert.equal(finished.logs.filter(entry => entry.message.startsWith('first：')).length, 1);
   assert.equal(finished.logs.filter(entry => entry.message.startsWith('second：')).length, 1);
+});
+
+test('phase progress is bounded, allowlisted and cleared after a failed job without exposing runner output', async (t) => {
+  const entered = deferred(), release = deferred();
+  const marker = 'private-acme-output-marker';
+  const app = await workspace(t, { run: async (_config, options) => {
+    options.onProgress({ type: 'job-start', id: 'site' });
+    options.onProgress({ type: 'job-phase', id: 'site', phase: marker });
+    for (let index = 0; index < 25; index++) {
+      options.onProgress({ type: 'job-phase', id: 'site', phase: index % 2 ? 'credentials' : 'preparing' });
+    }
+    options.onProgress({ type: 'job-phase', id: 'site', phase: 'acme', rawOutput: marker });
+    entered.resolve();
+    await release.promise;
+    const result = { id: 'site', ok: false, action: 'failed', error: '模拟签发失败' };
+    options.onProgress({ type: 'job-complete', id: 'site', result });
+    return [result];
+  } });
+  try {
+    assert.equal((await app.post('/api/run', { only: 'site' })).status, 202);
+    await entered.promise;
+    const response = await fetch(`${app.url}/api/state`);
+    const text = await response.text();
+    assert.equal(text.includes(marker), false, 'private runner output must never enter public state');
+    const { runtime } = JSON.parse(text);
+    assert.equal(runtime.currentJob, 'site');
+    assert.equal(runtime.currentPhase, 'acme');
+    assert.ok(Date.parse(runtime.phaseStartedAt) > 0);
+    assert.equal(runtime.phaseHistory.length, 20);
+    assert.equal(runtime.phaseHistory[0].phase, 'acme');
+    assert.equal(runtime.phaseHistory[0].jobId, 'site');
+    assert.ok(runtime.phaseHistory.every(event => /^[0-9a-f-]{36}$/.test(event.id) && Date.parse(event.at) > 0));
+  } finally { release.resolve(); }
+  await until(async () => !(await (await fetch(`${app.url}/api/state`)).json()).runtime.running, 'failed phase run must finish');
+  const { runtime } = await (await fetch(`${app.url}/api/state`)).json();
+  assert.equal(runtime.currentJob, null);
+  assert.equal(runtime.currentPhase, null);
+  assert.equal(runtime.phaseStartedAt, null);
+  assert.equal(runtime.results[0].action, 'failed');
+  assert.equal(runtime.phaseHistory[0].phase, 'acme', 'bounded phase history remains available for diagnosis');
 });
 
 test('optional session credentials reach run through env and never appear in public state or config', async (t) => {

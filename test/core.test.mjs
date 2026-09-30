@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { X509Certificate } from 'node:crypto';
 import { processCleanupError } from '../src/process-safety.mjs';
+import { ACME_DIAGNOSTICS } from '../src/acme-diagnostics.mjs';
 import {
   buildArgs, getStatus, inspectCertificate, jobPaths, loadConfig, plan,
   runOnce, runProcess, validateConfig,
@@ -166,6 +167,27 @@ test('failed issuance persists exponential backoff and does not save raw subproc
   await assert.rejects(fs.stat(path.join(config.dataDir, config.environment, '.run.lock')), { code: 'ENOENT' });
 });
 
+test('ACME failure classification persists only a fixed diagnosis and never raw domains or secrets', async (t) => {
+  const { config, job } = await workspace(t);
+  const privateText = 'secret-domain.example token-private-value';
+  let mode = 'classified';
+  const executor = async (_executable, args) => {
+    if (args.includes('--version')) return version;
+    if (args.includes('--help')) return help;
+    return mode === 'classified'
+      ? { code: 1, stdout: '', stderr: `Could not obtain certificates:\n[${privateText}] urn:ietf:params:acme:error:rateLimited` }
+      : { code: 'private-exit-code', stdout: privateText, stderr: 'unrecognized error' };
+  };
+  const [classified] = await runOnce(config, { executor });
+  assert.equal(classified.error, ACME_DIAGNOSTICS.RATE_LIMITED);
+  assert.equal((await stateFor(config, job)).lastError, ACME_DIAGNOSTICS.RATE_LIMITED);
+  mode = 'unknown';
+  const [fallback] = await runOnce(config, { executor, ignoreBackoff: true });
+  assert.match(fallback.error, /退出码 未知/);
+  assert.equal(JSON.stringify(await stateFor(config, job)).includes(privateText), false);
+  assert.equal(JSON.stringify(fallback).includes('private-'), false);
+});
+
 test('only one run may hold the environment lock and the lock is released after completion', async (t) => {
   const { config, job } = await workspace(t);
   let release, entered;
@@ -313,7 +335,7 @@ test('legacy DNSPod is a distinct provider using lego exec with credentials only
     if (actualArgs.includes('--help')) return help;
     assert.equal(options.env.DNSPOD_API_TOKEN, env.DNSPOD_API_TOKEN);
     assert.equal(options.env.EXEC_PATH, process.execPath);
-    assert.match(options.env.NODE_OPTIONS, /^--import=file:/);
+    assert.match(options.env.NODE_OPTIONS, /^--dns-result-order=ipv4first --import=file:/);
     assert.equal(options.env.EXEC_MODE, '');
     assert.equal(options.env.CERTFLOW_DNSPOD_STATE_DIR, path.join(jobPaths(config, job).directory, 'dnspod-challenges'));
     await issueFixture(config, job);
@@ -333,7 +355,7 @@ test('legacy provider errors persist an actionable allowlisted diagnosis without
     executor: async (executable, args) => {
       if (args.includes('--version')) return version;
       if (args.includes('--help')) return help;
-      return { code: 1, stdout: 'raw private-test-token', stderr: 'INFO CERTFLOW_DNSPOD_ERROR:AUTH_FAILED raw-secret-text' };
+      return { code: 1, stdout: 'raw private-test-token', stderr: 'INFO CERTFLOW_DNSPOD_ERROR:AUTH_FAILED raw-secret-text urn:ietf:params:acme:error:rateLimited' };
     },
   });
   assert.equal(result.ok, false);
@@ -488,15 +510,21 @@ test('batch progress reports each serial job including corrupt state, backoff an
       if (args.includes('--version')) return version;
       if (args.includes('--help')) return help;
       const job = config.jobs.find(item => item.id === args[args.indexOf('--cert.name') + 1]);
-      assert.equal(events.at(-1).type, 'job-start');
+      assert.equal(events.at(-1).type, 'job-phase');
       assert.equal(events.at(-1).id, job.id);
+      assert.equal(events.at(-1).phase, 'acme');
       if (job.id === 'failed') return { ...success, code: 1 };
       await issueFixture(config, job);
       return success;
     },
   });
-  assert.deepEqual(events.map(({ type, id, index, total }) => ({ type, id, index, total })),
+  assert.deepEqual(events.filter(event => event.type !== 'job-phase').map(({ type, id, index, total }) => ({ type, id, index, total })),
     ['broken', 'backoff', 'failed', 'healthy'].flatMap((id, offset) => ['job-start', 'job-complete'].map(type => ({ type, id, index: offset + 1, total: 4 }))));
+  assert.deepEqual(events.filter(event => event.type === 'job-phase').map(({ id, phase }) => [id, phase]), [
+    ['broken', 'preparing'], ['backoff', 'preparing'],
+    ['failed', 'preparing'], ['failed', 'credentials'], ['failed', 'client'], ['failed', 'acme'],
+    ['healthy', 'preparing'], ['healthy', 'credentials'], ['healthy', 'acme'], ['healthy', 'certificate'], ['healthy', 'export'],
+  ]);
   assert.deepEqual(events.filter(event => event.type === 'job-complete').map(event => event.result), results);
   assert.deepEqual(results.map(result => [result.id, result.ok, result.action]), [
     ['broken', false, 'failed'], ['backoff', false, 'backoff'], ['failed', false, 'failed'], ['healthy', true, 'issued'],
@@ -508,7 +536,7 @@ test('batch progress reports each serial job including corrupt state, backoff an
     await issueFixture(config, config.jobs[0]);
     return success;
   } });
-  assert.deepEqual(explicit.map(({ type, id, index, total }) => ({ type, id, index, total })), [
+  assert.deepEqual(explicit.filter(event => event.type !== 'job-phase').map(({ type, id, index, total }) => ({ type, id, index, total })), [
     { type: 'job-start', id: 'paused', index: 1, total: 1 }, { type: 'job-complete', id: 'paused', index: 1, total: 1 },
   ]);
 });

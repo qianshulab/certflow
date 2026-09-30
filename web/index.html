@@ -57,7 +57,6 @@
           <section class="panel automation-panel"><div class="section-heading"><span class="small-icon teal"><svg class="icon"><use href="#i-refresh"/></svg></span><span id="scheduler-badge" class="pill neutral-pill">未开启</span></div><h2>自动续期</h2><p>定时检查，由 ACME 客户端判断合适的续期时间。</p><div class="switch-row"><label for="scheduler-toggle">自动检查与续期</label><input id="scheduler-toggle" class="switch" type="checkbox" role="switch" disabled></div><p id="scheduler-detail" class="fine-print">开启后立即检查。需保持此工具服务运行。</p><div class="divider"></div><div class="automation-footnote"><svg class="icon"><use href="#i-info"/></svg><span>新证书生成后，已配置的 Nginx 部署会同步更新；NAS 管理页面需手动导入。</span></div></section>
           <section class="target-panel"><h3>部署说明</h3><dl class="deployment-summary"><dt>绿联 NAS 管理页面</dt><dd>续期后下载新证书，导入 UGOS。</dd><dt>Nginx / Docker 服务</dt><dd>配置部署目录与重载命令后，续期时自动更新。</dd></dl><button class="text-button" data-goto="exports">查看导出与部署 <svg class="icon"><use href="#i-arrow"/></svg></button></section>
         </div></div>
-        <div id="runtime-status" class="runtime-bar" role="status" hidden></div>
       </section>
 
       <section id="view-config" class="view" hidden>
@@ -85,6 +84,29 @@
       <footer class="page-footer"><span><svg class="icon"><use href="#i-shield"/></svg> CertFlow · 证书管理工作台</span><span>Let's Encrypt / ACME v2</span></footer>
     </main>
   </div>
+  <details id="run-progress" class="run-progress" hidden>
+    <summary class="run-progress-toggle">
+      <span class="run-progress-indicator" aria-hidden="true"></span>
+      <span class="run-progress-heading"><strong>证书运行进度</strong><small id="progress-summary">正在读取任务状态</small></span>
+      <span id="progress-state" class="pill blue-pill">运行中</span>
+      <span class="run-progress-chevron" aria-hidden="true">⌄</span>
+    </summary>
+    <div class="run-progress-body">
+      <dl class="run-progress-facts">
+        <div><dt>当前任务</dt><dd id="progress-job">—</dd></div>
+        <div><dt>当前阶段</dt><dd id="progress-phase">—</dd></div>
+        <div><dt>已完成</dt><dd id="progress-count">0 / 0 个任务</dd></div>
+        <div><dt>本轮耗时</dt><dd id="progress-elapsed">—</dd></div>
+      </dl>
+      <p id="progress-phase-elapsed" class="run-progress-phase-time"></p>
+      <div id="progress-results" class="run-progress-results" hidden></div>
+      <div class="run-progress-events-heading"><h3>最近阶段</h3><span>服务端进度 · 最多显示 8 条</span></div>
+      <ol id="progress-events" class="run-progress-events"></ol>
+      <p class="run-progress-note">DNS 验证可能持续数分钟；阶段变化以服务端实际执行为准。</p>
+    </div>
+    <div id="progress-actions" class="run-progress-actions" hidden><button id="progress-dismiss" type="button" class="text-button">关闭本轮进度</button></div>
+  </details>
+  <span id="progress-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <dialog id="plan-dialog"><div class="dialog-heading"><div><span class="eyebrow">EXECUTION PREVIEW</span><h2>执行计划</h2></div><button class="icon-button" id="close-plan" aria-label="关闭执行计划"><svg class="icon"><use href="#i-close"/></svg></button></div><p>仅预览已保存的配置，不会访问 ACME 或修改 DNS。</p><pre id="plan-content"></pre><div class="dialog-footer"><button class="button primary" id="close-plan-footer">完成</button></div></dialog>
 <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description"><h2 id="confirm-title"></h2><p id="confirm-description"></p><div class="dialog-footer button-group"><button type="button" id="confirm-cancel" class="button secondary" autofocus>取消</button><button type="button" id="confirm-action" class="button primary">确认</button></div></dialog>

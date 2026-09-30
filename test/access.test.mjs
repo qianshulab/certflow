@@ -11,6 +11,15 @@ const fakePassword = 'qa-only-management-password-1849';
 test('network binding requires explicit origin and a strong management password', () => {
   assert.throws(() => createAccess({ host: '0.0.0.0' }), /PUBLIC_URL/);
   assert.throws(() => createAccess({ host: '0.0.0.0', publicUrl: 'http://nas.test:3390', adminPassword: 'short' }), /12/);
+  assert.throws(() => createAccess({ host: '192.168.100.109' }), /PUBLIC_URL/);
+  assert.throws(() => createAccess({ host: '192.168.100.109', publicUrl: 'http://nas.test:3390', adminPassword: 'short' }), /12/);
+  assert.throws(() => createAccess({ host: '0.0.0.0', requireSpecificHost: true }), /具体局域网 IPv4/);
+  assert.throws(() => createAccess({ host: '127.0.0.1', requireSpecificHost: true }), /具体局域网 IPv4/);
+  assert.throws(() => createAccess({ host: '127.0.0.2', requireSpecificHost: true }), /具体局域网 IPv4/);
+  for (const host of ['nas.local', '::1', '192.168.1.999']) assert.throws(() => createAccess({ host }), /IPv4/);
+  const lan = createAccess({ host: '192.168.100.109', publicUrl: 'http://nas.test:3390', adminPassword: fakePassword, requireSpecificHost: true });
+  assert.equal(lan.remote, true);
+  assert.equal(lan.requiresLogin, true);
   for (const publicUrl of ['ftp://nas.test', 'https://user:password@nas.test', 'https://nas.test/subpath', 'https://nas.test/?token=secret']) assert.throws(() => createAccess({ host: '0.0.0.0', publicUrl, adminPassword: fakePassword }));
 });
 

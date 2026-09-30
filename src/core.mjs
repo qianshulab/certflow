@@ -5,6 +5,7 @@ import { createHash, createPrivateKey, randomUUID, X509Certificate } from 'node:
 import { domainToASCII } from 'node:url';
 import { deployCertificate, recoverDeployment } from './deploy.mjs';
 import { exportCertificate } from './export.mjs';
+import { readAcmeDiagnostic } from './acme-diagnostics.mjs';
 import { dnsPodExecEnvironment, loadDnsPodCredentials, readDnsPodDiagnostic } from './dnspod-token.mjs';
 import { processCleanupError, requiresProcessCleanup } from './process-safety.mjs';
 
@@ -326,12 +327,15 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
     for (const [offset, job] of jobs.entries()) {
       // Progress is observational: a disconnected UI must not turn a completed
       // issuance into a failure or interrupt the remaining certificate jobs.
-      const progress = async (type, result) => {
-        try { await onProgress?.({ type, id: job.id, index: offset + 1, total: jobs.length, ...(result ? { result: structuredClone(result) } : {}) }); }
+      const progress = async (type, result, phase) => {
+        try { await onProgress?.({ type, id: job.id, index: offset + 1, total: jobs.length,
+          ...(result ? { result: structuredClone(result) } : {}), ...(phase ? { phase } : {}) }); }
         catch { /* Reporting must never change certificate processing. */ }
       };
+      const reportPhase = (phase) => progress('job-phase', null, phase);
       const complete = async (result) => { results.push(result); await progress('job-complete', result); };
       await progress('job-start');
+      await reportPhase('preparing');
       const files = jobPaths(config, job);
       let state;
       try { state = await readState(files.state); }
@@ -374,12 +378,16 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
         };
         // A saved new certificate must be deployed again after a previous deployment failure.
         if (before && state.issuedFingerprint === before.fingerprint && await needsDeployment(job, before, state)) {
+          await reportPhase('export');
           await saveExport(before);
+          await reportPhase('deployment');
           await deploy(before);
           action = 'deployed';
         } else {
+          await reportPhase('credentials');
           await checkCredentials(job, env);
           if (!clientChecked) {
+            await reportPhase('client');
             const version = await executor(config.legoPath, ['--version'], { cwd: config.baseDir, env, timeoutMs: 15000 });
             if (version.code !== 0 || !/\blego version v?5\./.test(version.stdout)) fail('仅支持 lego v5，请安装已验证的 v5.5.2 并检查 legoPath。');
             const help = await executor(config.legoPath, ['run', '--help'], { cwd: config.baseDir, env, timeoutMs: 15000 });
@@ -389,19 +397,29 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
           await fs.mkdir(files.lego, { recursive: true, mode: 0o700 });
           const clientEnv = job.challenge.provider === 'dnspod-token'
             ? dnsPodExecEnvironment(env, path.join(files.directory, 'dnspod-challenges'), config.email) : env;
+          await reportPhase('acme');
           const result = await executor(config.legoPath, buildArgs(config, job), { cwd: config.baseDir, env: clientEnv });
           if (result.code !== 0) {
-            const diagnostic = job.challenge.provider === 'dnspod-token' ? readDnsPodDiagnostic(`${result.stdout}\n${result.stderr}`) : null;
-            fail(diagnostic ?? `lego 申请／续期失败（退出码 ${result.code}）。请检查域名、DNS API 权限和网络；原始输出未保存，以避免泄露凭据。`);
+            const output = `${result.stdout}\n${result.stderr}`;
+            const providerDiagnostic = job.challenge.provider === 'dnspod-token' ? readDnsPodDiagnostic(output) : null;
+            const diagnostic = providerDiagnostic ?? readAcmeDiagnostic(output);
+            const exitCode = Number.isSafeInteger(result.code) && result.code >= 0 ? result.code : '未知';
+            fail(diagnostic ?? `lego 申请／续期失败（退出码 ${exitCode}）。请检查域名、DNS API 权限和网络；原始输出未保存，以避免泄露凭据。`);
           }
           if (job.challenge.provider === 'dnspod-token') bridgeWarning = readDnsPodDiagnostic(`${result.stdout}\n${result.stderr}`);
+          await reportPhase('certificate');
           const issued = await readCertificate(config, job);
           state.issuedFingerprint = issued.fingerprint;
+          await reportPhase('export');
           await saveExport(issued);
           // Persist issuance before deployment so a reload failure never forces another order.
           await writeState(files.state, state);
           action = before?.fingerprint === issued.fingerprint ? 'unchanged' : before ? 'renewed' : 'issued';
-          if (await needsDeployment(job, issued, state)) { await deploy(issued); if (action === 'unchanged') action = 'deployed'; }
+          if (await needsDeployment(job, issued, state)) {
+            await reportPhase('deployment');
+            await deploy(issued);
+            if (action === 'unchanged') action = 'deployed';
+          }
         }
         state.lastWarning = null;
         state.dnsCleanupPendingCount = 0;

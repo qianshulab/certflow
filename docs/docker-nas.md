@@ -4,7 +4,7 @@
 
 Windows 目录中的 `lego.exe` 只供电脑本机使用。NAS 部署包不包含这个 EXE；Docker 构建会自动下载 Linux 版 lego，并把 Node.js 与网页管理服务放进容器，NAS 上无需双击任何程序。
 
-镜像地址为 **`ghcr.io/qianshulab/certflow:0.4.1`**，源代码在 [GitHub](https://github.com/qianshulab/certflow)。镜像使用 Node.js 22 与已校验 SHA-256 的 lego v5.5.2，目标架构为 DXP4800 使用的 Linux amd64。每个版本由 GitHub Actions 在 Windows / Linux 上运行测试，再构建 Linux 镜像并验证容器登录、加密凭据与重启持久化；全部通过后才发布到 GHCR。构建状态见 [Actions](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)。
+镜像地址为 **`ghcr.io/qianshulab/certflow:0.4.2`**，源代码在 [GitHub](https://github.com/qianshulab/certflow)。镜像使用 Node.js 22 与已校验 SHA-256 的 lego v5.5.2，目标架构为 DXP4800 使用的 Linux amd64。每个版本由 GitHub Actions 在 Windows / Linux 上运行测试，再构建 Linux 镜像并验证容器登录、加密凭据与重启持久化；全部通过后才发布到 GHCR。构建状态见 [Actions](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)。
 
 ## 首次部署
 
@@ -31,6 +31,30 @@ Windows 目录中的 `lego.exe` 只供电脑本机使用。NAS 部署包不包�
 UGOS 的 Docker 应用支持“项目”形式管理 Compose。也可以通过“项目 → 创建”导入 `compose.yaml`；确保该项目的工作目录中已有 `.env`，再部署。不同 UGOS 版本的目录选择入口可能不同；如果向导只导入 YAML，请先把 `.env` 放到它生成的项目目录。项目启动后，可在 UGOS 的 Docker 界面查看状态、日志和重启。参见[绿联 Docker 项目说明](https://support.ugnas.com/detail/article/en-US/411)。
 
 若 NAS 的 3390 端口已占用，在 `.env` 中同时设置 `CERTFLOW_PORT=3391` 和 `CERTFLOW_PUBLIC_URL=http://你的NAS地址:3391`。容器内部端口始终是 3390，Compose 会完成端口映射。建议使用固定版本标签，便于升级前备份和问题回滚。
+
+## 主机网络备用方案
+
+默认 `compose.yaml` 使用 Docker 桥接网络。如果 NAS 主机可以访问 DNSPod API 和 ACME 服务，但容器访问超时，可以改用项目提供的 `compose.host-network.yaml` 覆盖文件。先确认镜像版本包含此覆盖文件所需的具体 IPv4 监听与健康检查支持；旧版 `0.4.1` 不支持，不能仅复制覆盖文件给旧容器使用。
+
+在 `.env` 中把 `CERTFLOW_BIND_IP` 改为 NAS 的**实际局域网 IPv4**，例如：
+
+```dotenv
+CERTFLOW_BIND_IP=192.168.1.100
+CERTFLOW_PUBLIC_URL=http://192.168.1.100:3390
+CERTFLOW_PORT=3390
+```
+
+`CERTFLOW_BIND_IP` 不能是 `0.0.0.0`、环回地址或主机名；主机网络模式会拒绝这些值。主机网络模式下，进程直接占用 NAS 的 `CERTFLOW_PORT`，Docker 不再做端口映射；这个端口须未被其他服务使用。覆盖文件会让 Node.js 优先使用 IPv4，并让证书管理服务只监听指定 NAS 地址；登录密码与浏览器来源校验仍然生效。无需开放 22、80 或 443 端口供 ACME DNS 验证使用。
+
+先检查合并后的配置，再重建服务：
+
+```sh
+docker compose --env-file .env -f compose.yaml -f compose.host-network.yaml config --quiet
+docker compose --env-file .env -f compose.yaml -f compose.host-network.yaml up -d
+docker compose --env-file .env -f compose.yaml -f compose.host-network.yaml ps
+```
+
+此模式使用与默认部署相同的 `certflow-data` 数据卷，不需重新输入已保存的 DNS 凭据。以后查看日志、重启或升级时仍须同时指定这两个 `-f` 文件。恢复桥接模式时，仅使用 `compose.yaml` 再执行 `up -d`；保留相同项目目录及数据卷。若主机网络模式仍超时，应分别检查 NAS 的 DNS、出站 HTTPS、代理与防火墙。
 
 ## 从源码构建（可选）
 
@@ -138,12 +162,12 @@ docker compose --env-file .env up -d
 
 ## 构建与发布维护
 
-推送代码到 `main` 或发起 PR 会运行自动检查和 Docker 冒烟测试。推送与 `package.json` 对应的版本标签（例如 `v0.4.1`）会在全部检查通过后发布 `0.4.1` 和 `latest` 两个镜像标签。也可在 GitHub Actions 的 **Verify and build → Run workflow** 中选择 `main`，勾选 `publish` 手动构建并发布当前版本。GHCR 使用工作流的 `GITHUB_TOKEN`，无需向仓库添加个人访问 Token。
+推送代码到 `main` 或发起 PR 会运行自动检查和 Docker 冒烟测试。推送与 `package.json` 对应的版本标签（例如 `v0.4.2`）会在全部检查通过后发布 `0.4.2` 和 `latest` 两个镜像标签。也可在 GitHub Actions 的 **Verify and build → Run workflow** 中选择 `main`，勾选 `publish` 手动构建并发布当前版本。GHCR 使用工作流的 `GITHUB_TOKEN`，无需向仓库添加个人访问 Token。
 
 **维护者首次发布后需单独确认包的公开状态。** GHCR 新包默认 private，公开 GitHub 仓库不会自动保证匿名拉取。进入 [CertFlow 包页面](https://github.com/users/qianshulab/packages/container/package/certflow)的 **Package settings → Change visibility → Public**。工作流汇总会记录匿名访问结果；若显示未验证，确认可见性及网络后运行：
 
 ```sh
-node scripts/verify-registry.mjs ghcr.io/qianshulab/certflow 0.4.1
+node scripts/verify-registry.mjs ghcr.io/qianshulab/certflow 0.4.2
 ```
 
 该命令不读取 Docker 登录信息或个人 Token，成功才表示版本 manifest 可匿名读取，并输出其 SHA-256 digest。也可加上工作流记录的 `ghcr.io/qianshulab/certflow@sha256:...` 作为第四个参数，检查公开镜像与测试镜像一致。包权限与仓库权限分别管理，参见 [GitHub 容器仓库说明](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。

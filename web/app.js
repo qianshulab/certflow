@@ -15,6 +15,15 @@ const exportKinds = [
   { kind: 'fullchain', filename: 'fullchain.pem', label: '完整证书链 · Nginx / Docker', icon: 'shield' },
 ];
 const viewNames = { overview: '证书工作台', config: '证书配置', credentials: 'DNS 凭据', exports: '导出与部署' };
+const phaseLabels = {
+  preparing: '准备任务',
+  credentials: '检查 DNS 凭据',
+  client: '检查 ACME 客户端',
+  acme: '等待 ACME 与 DNS 验证',
+  certificate: '验证签发证书',
+  export: '生成导出文件',
+  deployment: '部署并重载服务',
+};
 let state = null;
 let draft = null;
 let draftVersion = null;
@@ -41,6 +50,12 @@ let validationVisible = false;
 let confirmResolve;
 let selectedCertificate = '';
 let preflightRunning = false;
+let shownRunId = null;
+let progressEventsSignature = '';
+let progressAnnouncement = '';
+const dismissedRunKey = 'certflow:dismissed-run-id';
+let dismissedRunId;
+try { dismissedRunId = sessionStorage.getItem(dismissedRunKey); } catch { dismissedRunId = null; }
 
 function hasCredentialDraft() { return [...document.querySelectorAll('.credential-panel input[name]')].some((input) => input.value); }
 function normalizeProvider(value) { return value === 'dnspod' ? 'tencentcloud' : value; }
@@ -182,6 +197,7 @@ async function refresh() {
       : '无法连接管理服务。请确认图形界面工具仍在运行，页面会自动尝试重新连接。';
     $('connection-label').textContent = shutdownRequested ? '服务已退出' : '连接已断开';
     $('connection-dot').classList.add('offline');
+    renderProgress();
     updateControls();
   }
 }
@@ -239,12 +255,101 @@ function renderState() {
   $('scheduler-detail').textContent = enabled
     ? state.scheduler.resumeError ? `恢复调度失败：${state.scheduler.resumeError}` : state.runtime?.running ? '正在检查证书；本轮结束后安排下一次检查。' : `下次检查：${date(state.scheduler.nextRunAt)}。重启工具后自动恢复。`
     : '开启后立即检查，设置会长期保存。自动续期需要工具服务持续运行。';
-  const runtime = state.runtime ?? {};
-  $('runtime-status').hidden = !runtime.running && !runtime.error;
-  const batchProgress = runtime.totalJobs > 0 ? `已完成 ${runtime.completedCount ?? 0} / ${runtime.totalJobs} 个任务。` : '';
-  const activeJob = runtime.currentJob ? `当前执行：${runtime.currentJob}。` : runtime.only ? `执行任务 ${runtime.only}。` : '批次正在执行，任务依次处理。';
-  $('runtime-status').textContent = runtime.running ? `${batchProgress}${activeJob}DNS 验证可能需要几分钟，可在活动记录中查看结果。` : runtime.error ? `上次执行未完成：${runtime.error}` : '';
+  renderProgress();
   updateControls();
+}
+function elapsedSince(startedAt, finishedAt) {
+  const start = Date.parse(startedAt);
+  const finish = finishedAt ? Date.parse(finishedAt) : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(finish)) return '—';
+  const seconds = Math.max(0, Math.floor((finish - start) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分 ${String(seconds % 60).padStart(2, '0')} 秒`;
+  return `${Math.floor(minutes / 60)} 小时 ${String(minutes % 60).padStart(2, '0')} 分`;
+}
+function updateProgressElapsed() {
+  if (!state?.runtime?.runId || $('run-progress').hidden) return;
+  const runtime = state.runtime;
+  const stale = !connected && runtime.running;
+  $('progress-elapsed').textContent = stale ? '等待重新连接' : elapsedSince(runtime.startedAt, runtime.running ? null : runtime.finishedAt);
+  $('progress-phase-elapsed').textContent = runtime.running && runtime.currentPhase
+    ? stale ? '当前阶段状态暂未更新。' : `当前阶段已持续 ${elapsedSince(runtime.phaseStartedAt)}。`
+    : '';
+}
+function renderProgress() {
+  const panel = $('run-progress');
+  const runtime = state?.runtime;
+  if (!runtime?.runId || runtime.runId === dismissedRunId) {
+    panel.hidden = true;
+    if (!runtime?.runId) shownRunId = null;
+    document.body.classList.remove('has-run-progress');
+    return;
+  }
+  panel.hidden = false;
+  document.body.classList.add('has-run-progress');
+  if (shownRunId !== runtime.runId) {
+    shownRunId = runtime.runId;
+    progressEventsSignature = '';
+    progressAnnouncement = '';
+    panel.open = true;
+  }
+  const results = Array.isArray(runtime.results) ? runtime.results : [];
+  const failed = results.filter((result) => !result.ok && result.action !== 'backoff');
+  const delayed = results.filter((result) => result.action === 'backoff');
+  const complete = Math.min(Number(runtime.completedCount) || 0, Number(runtime.totalJobs) || 0);
+  const total = Number(runtime.totalJobs) || 0;
+  const phase = phaseLabels[runtime.currentPhase] ?? (runtime.running ? '等待下一阶段' : '本轮已结束');
+  const outcome = !connected && runtime.running ? '连接中断' : runtime.running ? '运行中'
+    : runtime.error || failed.length ? '有失败' : delayed.length ? '等待重试' : '已完成';
+  $('progress-state').textContent = outcome;
+  $('progress-state').className = `pill ${outcome === '有失败' || outcome === '连接中断' ? 'red' : outcome === '等待重试' ? 'amber' : outcome === '已完成' ? 'teal' : 'blue'}-pill`;
+  panel.dataset.status = outcome === '有失败' || outcome === '连接中断' ? 'error' : outcome === '已完成' ? 'complete' : 'running';
+  const heading = runtime.running
+    ? `${complete} / ${total} 个任务 · ${runtime.currentJob || runtime.only || '正在开始'} · ${phase}`
+    : `${complete} / ${total} 个任务 · ${outcome}`;
+  $('progress-summary').textContent = heading;
+  $('progress-job').textContent = runtime.currentJob || (runtime.running ? '等待任务启动' : '本轮任务已结束');
+  $('progress-phase').textContent = runtime.running ? phase : outcome;
+  $('progress-count').textContent = `${complete} / ${total} 个任务`;
+  $('progress-actions').hidden = Boolean(runtime.running);
+  updateProgressElapsed();
+
+  const resultBox = $('progress-results');
+  resultBox.hidden = !runtime.error && !failed.length && !delayed.length;
+  if (!resultBox.hidden) {
+    const notices = [];
+    if (runtime.error) notices.push({ title: '批次执行中断', message: runtime.error, tone: 'error' });
+    for (const result of failed.slice(0, 3)) notices.push({ title: `${result.id} · 执行失败`, message: result.error || '请查看工作台活动记录。', tone: 'error' });
+    if (failed.length > 3) notices.push({ title: `另有 ${failed.length - 3} 个任务失败`, message: '请在证书工作台查看各任务结果。', tone: 'error' });
+    if (delayed.length) notices.push({ title: `${delayed.length} 个任务等待重试`, message: '任务处于失败退避期；可查看各任务的下次重试时间。', tone: 'warning' });
+    const signature = JSON.stringify(notices);
+    if (resultBox.dataset.signature !== signature) {
+      resultBox.dataset.signature = signature;
+      resultBox.replaceChildren(...notices.map((notice) => {
+        const row = el('div', `run-progress-result ${notice.tone}`);
+        row.append(el('strong', '', notice.title), el('span', '', notice.message));
+        return row;
+      }));
+    }
+  }
+
+  const events = (Array.isArray(runtime.phaseHistory) ? runtime.phaseHistory : []).slice(0, 8);
+  const signature = JSON.stringify(events);
+  if (signature !== progressEventsSignature) {
+    progressEventsSignature = signature;
+    $('progress-events').replaceChildren(...(events.length ? events.map((event) => {
+      const row = el('li', 'run-progress-event');
+      row.append(el('time', '', date(event.at, true)), el('span', 'run-progress-event-job', event.jobId || '任务'), el('span', '', phaseLabels[event.phase] || '执行阶段'));
+      row.querySelector('time').dateTime = event.at;
+      return row;
+    }) : [el('li', 'run-progress-empty', runtime.running ? '等待阶段更新…' : '本轮没有阶段记录。')]));
+  }
+  const announcement = `${outcome}。${heading}${failed.length ? `。${failed.length} 个任务失败` : ''}${runtime.error ? `。${runtime.error}` : ''}`;
+  if (announcement !== progressAnnouncement) {
+    progressAnnouncement = announcement;
+    $('progress-announcement').textContent = announcement;
+  }
 }
 function metric(id, value, unit) { $(id).replaceChildren(document.createTextNode(String(value)), el('small', '', unit)); }
 function renderSetup(jobs, statuses) {
@@ -1107,3 +1212,11 @@ $('export-job').addEventListener('change', () => { exportSignature = ''; renderE
 switchView(location.hash.slice(1) || 'overview', false);
 updateControls();
 void poll();
+setInterval(updateProgressElapsed, 1000);
+$('progress-dismiss').addEventListener('click', () => {
+  if (!state?.runtime?.runId || state.runtime.running) return;
+  dismissedRunId = state.runtime.runId;
+  try { sessionStorage.setItem(dismissedRunKey, dismissedRunId); } catch { /* In-memory dismissal still works. */ }
+  renderProgress();
+  document.querySelector('.nav-item.active')?.focus({ preventScroll: true });
+});

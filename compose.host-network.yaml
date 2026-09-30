@@ -1,0 +1,11 @@
+# Optional fallback for NAS systems where Docker's bridge cannot reach DNSPod/ACME.
+# Always combine with compose.yaml; the default deployment remains bridge mode.
+services:
+  certflow:
+    network_mode: host
+    ports: !reset []
+    environment:
+      CERTFLOW_HOST: ${CERTFLOW_BIND_IP:?Set CERTFLOW_BIND_IP to the NAS LAN IPv4 for host networking}
+      CERTFLOW_PORT: ${CERTFLOW_PORT:-3390}
+      CERTFLOW_REQUIRE_SPECIFIC_HOST: "1"
+      NODE_OPTIONS: --dns-result-order=ipv4first
