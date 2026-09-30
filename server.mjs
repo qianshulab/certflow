@@ -18,7 +18,7 @@ import { createZip } from './src/zip.mjs';
 import { createDistributionTokenStore, scopeFingerprint } from './src/distribution-tokens.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.5.1';
+const VERSION = '0.5.2';
 const PROVIDERS = {
   'dnspod-token': ['DNSPOD_API_ID', 'DNSPOD_API_TOKEN'],
   tencentcloud: ['TENCENTCLOUD_SECRET_ID', 'TENCENTCLOUD_SECRET_KEY'],

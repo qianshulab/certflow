@@ -9,7 +9,7 @@
 申请、续期、导出与本地部署，在一个深色工作台中完成。
 
 [![Verify and build](https://github.com/qianshulab/certflow/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.5.1-ff6633)](package.json)
+[![Version](https://img.shields.io/badge/version-0.5.2-ff6633)](package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-43853d)](package.json)
 [![Docker platform](https://img.shields.io/badge/Docker-linux%2Famd64-2496ed)](Dockerfile)
 
@@ -61,7 +61,7 @@ cp .env.example .env
 | --- | --- |
 | `CERTFLOW_PUBLIC_URL` | 必填。浏览器实际访问地址，例如 `http://192.168.1.100:3390`；替换为实际 NAS 地址 |
 | `CERTFLOW_ADMIN_PASSWORD` | 必填。自行设置至少 12 位管理密码；无默认密码 |
-| `CERTFLOW_IMAGE` | 默认固定为 `ghcr.io/qianshulab/certflow:0.5.1` |
+| `CERTFLOW_IMAGE` | 默认固定为 `ghcr.io/qianshulab/certflow:0.5.2` |
 | `CERTFLOW_PORT` | 默认 `3390`；修改后同步调整访问地址中的端口 |
 | `CERTFLOW_TLS_JOB_ID` | 可选。首次申请管理域名证书后填写其任务 ID，并将访问地址改为 HTTPS |
 
@@ -130,7 +130,7 @@ npm start
 
 | 使用场景 | 更新方式 |
 | --- | --- |
-| **绿联 UGOS 管理页面** | 下载新证书，在控制面板导入，并在服务配置中选用；每次续期后需重新导入 |
+| **绿联 UGOS 服务** | 下载新证书，在控制面板导入，并在服务配置中选用；每次续期后需重新导入。DXP4800 WebDAV 的实测字段映射见[证书导出与安装](docs/configuration.md#绿联-ugos-服务) |
 | **CertFlow 所在主机的 Nginx** | 配置可写的证书目录、检查与重载命令，签发或续期后在该主机更新 |
 | **其他服务器的 Nginx / Docker 服务** | 在目标服务器运行[只读 HTTPS 拉取脚本](docs/remote-pull.md)，由目标侧校验、安装并重载 |
 | **宝塔面板管理的站点** | 在面板中粘贴同批次的完整证书链与私钥；需要自动更新时可采用目标侧脚本及可控的站点证书路径 |

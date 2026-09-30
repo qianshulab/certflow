@@ -4,7 +4,7 @@
 
 Windows 目录中的 `lego.exe` 只供电脑本机使用。NAS 部署包不包含这个 EXE；Docker 构建会自动下载 Linux 版 lego，并把 Node.js 与网页管理服务放进容器，NAS 上无需双击任何程序。
 
-镜像地址为 **`ghcr.io/qianshulab/certflow:0.5.1`**，源代码在 [GitHub](https://github.com/qianshulab/certflow)。镜像使用 Node.js 22 与已校验 SHA-256 的 lego v5.5.2，目标架构为 DXP4800 使用的 Linux amd64。每个版本由 GitHub Actions 在 Windows / Linux 上运行测试，再构建 Linux 镜像并验证容器登录、加密凭据与重启持久化；全部通过后才发布到 GHCR。构建状态见 [Actions](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)。
+镜像地址为 **`ghcr.io/qianshulab/certflow:0.5.2`**，源代码在 [GitHub](https://github.com/qianshulab/certflow)。镜像使用 Node.js 22 与已校验 SHA-256 的 lego v5.5.2，目标架构为 DXP4800 使用的 Linux amd64。每个版本由 GitHub Actions 在 Windows / Linux 上运行测试，再构建 Linux 镜像并验证容器登录、加密凭据与重启持久化；全部通过后才发布到 GHCR。构建状态见 [Actions](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)。
 
 ## 首次部署
 
@@ -183,11 +183,11 @@ docker compose --env-file .env up -d
 
 如果修改管理密码或访问地址，也要重新执行 `up -d` 以重新创建容器，单纯重启不会重新读取 `.env`。已经登录的会话随服务重启失效。
 
-## 导入绿联 NAS 管理页面
+## 导入绿联 NAS 服务
 
-在“导出与部署”中下载正式环境的 `fullchain.pem` 和 `privkey.pem`，到 UGOS 的“控制面板 → 安全性 → 证书”导入，并在服务配置中选用。某些版本分别要求服务器证书、私钥和中间证书时，分别使用 `cert.pem`、`privkey.pem` 和 `chain.pem`。参见[绿联证书说明](https://support.ugnas.com/detail/article/zh-CN/107)。
+在“导出与部署”中下载同次正式签发的 `fullchain.pem` 和 `privkey.pem`，到 UGOS 的“控制面板 → 安全性 → 证书”新建导入记录。在 DXP4800 的 UGOS WebDAV 实测中，**证书字段选择 `fullchain.pem`，私钥字段选择 `privkey.pem`，中间证书字段留空**；随后在“服务配置”中为 WebDAV 选用新证书并保存。分别导入 `cert.pem` 与 `chain.pem` 时，该服务曾只发送域名证书。其他 UGOS 服务和系统版本需核对实际发送的证书链。参见[绿联证书说明](https://support.ugnas.com/detail/article/zh-CN/107)及[证书导出与安装](configuration.md#绿联-ugos-服务)。
 
-当前工具会自动申请、续期并更新导出文件；**UGOS 管理页面仍需在续期后重新导入并选用新证书**。尚未接入未经验证的 NAS 私有接口。
+当前工具会自动申请、续期并更新导出文件；**UGOS 手动导入的是证书副本，续期后仍需重新导入新文件并在服务配置中选用**。尚未接入 UGOS 自动导入接口；如需自动更新，应另行配置目标明确支持的部署方式。
 
 后续给 Docker / Nginx 服务部署时，可给指定服务额外挂载一个专用证书输出目录，并配置该服务实际可执行的检查和重载方式。不要把整个 `/data` 暴露给其他服务，其中包含所有账户、私钥及 DNS 凭据密钥。当前 Compose 没有挂载 Docker socket，也不会直接重启其他容器。
 
@@ -203,6 +203,7 @@ docker compose --env-file .env up -d
 | 地址或来源校验失败 | 浏览器地址是否与 `CERTFLOW_PUBLIC_URL` 完全一致；修改后是否重新创建容器 |
 | 提示凭据无法解密 | 是否完整恢复同一套 vault 和 key；是否误复制了 Windows DPAPI 文件 |
 | 数据目录无权限 | 自定义挂载目录是否由 UID/GID `1000:1000` 所有，`.certflow` 权限是否为 `700` |
+| WebDAV 已选新证书但客户端报告证书链不完整 | 检查服务实际发出的证书链；DXP4800 WebDAV 实测需将 `fullchain.pem` 放入证书字段、中间证书字段留空，并重新在服务配置中选用 |
 | 证书已续期但 NAS 仍提示即将过期 | UGOS 使用的仍是旧证书，需要重新导入并在服务配置选用新证书 |
 | 看到遗留运行锁 | 先确认没有其他实例或仍在执行的任务，再按[故障恢复说明](configuration.md#故障恢复)处理 |
 
@@ -210,12 +211,12 @@ docker compose --env-file .env up -d
 
 ## 构建与发布维护
 
-推送代码到 `main` 或发起 PR 会运行自动检查和 Docker 冒烟测试。推送与 `package.json` 对应的版本标签（例如 `v0.5.1`）会在全部检查通过后发布 `0.5.1` 和 `latest` 两个镜像标签。也可在 GitHub Actions 的 **Verify and build → Run workflow** 中选择 `main`，勾选 `publish` 手动构建并发布当前版本。GHCR 使用工作流的 `GITHUB_TOKEN`，无需向仓库添加个人访问 Token。
+推送代码到 `main` 或发起 PR 会运行自动检查和 Docker 冒烟测试。推送与 `package.json` 对应的版本标签（例如 `v0.5.2`）会在全部检查通过后发布 `0.5.2` 和 `latest` 两个镜像标签。也可在 GitHub Actions 的 **Verify and build → Run workflow** 中选择 `main`，勾选 `publish` 手动构建并发布当前版本。GHCR 使用工作流的 `GITHUB_TOKEN`，无需向仓库添加个人访问 Token。
 
 **维护者首次发布后需单独确认包的公开状态。** GHCR 新包默认 private，公开 GitHub 仓库不会自动保证匿名拉取。进入 [CertFlow 包页面](https://github.com/users/qianshulab/packages/container/package/certflow)的 **Package settings → Change visibility → Public**。工作流汇总会记录匿名访问结果；若显示未验证，确认可见性及网络后运行：
 
 ```sh
-node scripts/verify-registry.mjs ghcr.io/qianshulab/certflow 0.5.1
+node scripts/verify-registry.mjs ghcr.io/qianshulab/certflow 0.5.2
 ```
 
 该命令不读取 Docker 登录信息或个人 Token，成功才表示版本 manifest 可匿名读取，并输出其 SHA-256 digest。也可加上工作流记录的 `ghcr.io/qianshulab/certflow@sha256:...` 作为第四个参数，检查公开镜像与测试镜像一致。包权限与仓库权限分别管理，参见 [GitHub 容器仓库说明](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。

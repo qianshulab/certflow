@@ -13,7 +13,7 @@ RUN test "$TARGETARCH" = "amd64" \
     && chmod 755 /out/lego
 
 FROM node:22-bookworm-slim
-ARG VERSION=0.5.1
+ARG VERSION=0.5.2
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="CertFlow" \
     org.opencontainers.image.description="HTTPS certificate issuance, renewal and management for NAS" \

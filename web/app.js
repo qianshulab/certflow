@@ -9,10 +9,10 @@ const providers = {
   alidns: { name: '阿里云 DNS', subtitle: '使用阿里云 RAM 用户的访问密钥', fields: [['ALICLOUD_ACCESS_KEY', 'AccessKey ID'], ['ALICLOUD_SECRET_KEY', 'AccessKey Secret']] },
 };
 const exportKinds = [
-  { kind: 'certificate', filename: 'cert.pem', label: '域名证书 · NAS 证书字段', icon: 'file' },
+  { kind: 'fullchain', filename: 'fullchain.pem', label: '完整证书链 · UGOS WebDAV / Nginx / Docker', icon: 'shield' },
   { kind: 'privateKey', filename: 'privkey.pem', label: '证书私钥 · 请妥善保管', icon: 'key' },
-  { kind: 'chain', filename: 'chain.pem', label: '中间证书 · NAS 中间证书字段', icon: 'link' },
-  { kind: 'fullchain', filename: 'fullchain.pem', label: '完整证书链 · Nginx / Docker', icon: 'shield' },
+  { kind: 'certificate', filename: 'cert.pem', label: '域名证书 · 不含中间证书', icon: 'file' },
+  { kind: 'chain', filename: 'chain.pem', label: '中间证书链 · 不含域名证书', icon: 'link' },
   { kind: 'certificateCrt', sourceKind: 'certificate', filename: 'cert.crt', label: '域名证书 · CRT 扩展名', icon: 'file' },
   { kind: 'privateKeyKey', sourceKind: 'privateKey', filename: 'privkey.key', label: '证书私钥 · KEY 扩展名', icon: 'key' },
 ];
@@ -1084,6 +1084,7 @@ function renderExports(jobs, statuses) {
   const bundleBar = el('div', 'export-bundle'); bundleBar.append(el('div', '', '包含证书、私钥、中间证书与完整证书链。'), bundle);
   $('export-files').replaceChildren(bundleBar, ...exportKinds.map((item) => {
     const card = el('div', 'export-file');
+    if (item.kind === 'fullchain') card.classList.add('export-file-recommended');
     const copy = el('div', 'export-file-copy'); copy.append(el('strong', '', item.filename), el('small', '', item.label));
     const download = button('下载', 'button secondary small-button', () => downloadExport(jobId, item.kind, item.filename), 'download');
     download.dataset.downloadKind = item.kind;

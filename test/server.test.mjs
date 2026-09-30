@@ -547,6 +547,37 @@ test('certificate download accepts only configured jobs and fixed export kinds',
   assert.equal((await redirectedResponse.text()).includes('BEGIN PRIVATE KEY'), false);
 });
 
+test('fullchain and ZIP downloads follow the renewed certificate instead of stale export state', async (t) => {
+  const app = await workspace(t);
+  const config = await loadConfig(app.configPath);
+  const files = jobPaths(config, config.jobs[0]);
+  const original = await fs.readFile(new URL('./fixtures/server-cert.test.txt', import.meta.url));
+  const renewed = await fs.readFile(new URL('./fixtures/tls-renewed-cert.test.txt', import.meta.url));
+  const privateKey = await fs.readFile(new URL('./fixtures/server-key.test.txt', import.meta.url));
+  await fs.mkdir(path.dirname(files.certificate), { recursive: true });
+  await fs.writeFile(files.certificate, original);
+  await fs.writeFile(files.privateKey, privateKey);
+  const oldExport = await exportCertificate({ directory: files.exports, certificate: original, privateKey });
+  await fs.writeFile(files.state, JSON.stringify({ exportFiles: oldExport }));
+
+  await fs.writeFile(files.certificate, renewed);
+  const newExport = await exportCertificate({ directory: files.exports, certificate: renewed, privateKey });
+  assert.notEqual(newExport.directory, oldExport.directory);
+  const currentFullchain = await fs.readFile(newExport.fullchain);
+
+  const response = await app.post('/api/export', { id: 'site', kind: 'fullchain' });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-disposition'), /site-fullchain\.pem/);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), currentFullchain);
+
+  const bundle = await app.post('/api/export', { id: 'site', kind: 'bundle' });
+  assert.equal(bundle.status, 200);
+  const zipBytes = Buffer.from(await bundle.arrayBuffer());
+  assert.ok(zipBytes.includes(Buffer.from('fullchain.pem')));
+  assert.ok(zipBytes.includes(currentFullchain), 'the ZIP must contain the renewed fullchain bytes');
+  assert.equal(zipBytes.includes(await fs.readFile(oldExport.fullchain)), false, 'the ZIP must not contain the prior certificate');
+});
+
 test('preflight is read-only, rejects unknown jobs and does not expose credentials', async (t) => {
   const marker = 'preflight-only-fake-token-marker';
   let seen;
