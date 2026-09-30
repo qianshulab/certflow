@@ -5,7 +5,8 @@ import { createHash, createPrivateKey, randomUUID, X509Certificate } from 'node:
 import { domainToASCII } from 'node:url';
 import { deployCertificate, recoverDeployment } from './deploy.mjs';
 import { exportCertificate } from './export.mjs';
-import { readAcmeDiagnostic } from './acme-diagnostics.mjs';
+import { ACME_DIAGNOSTICS, readAcmeDiagnostic } from './acme-diagnostics.mjs';
+import { ACCOUNT_RECOVERY_CHECKPOINT_ERROR, ACCOUNT_RECOVERY_DURABILITY_ERROR, accountRecoveryNeedsReview, isMissingAccountRecoveryFailure, quarantineIncompleteAccount } from './acme-account-recovery.mjs';
 import { dnsPodExecEnvironment, loadDnsPodCredentials, readDnsPodDiagnostic } from './dnspod-token.mjs';
 import { processCleanupError, requiresProcessCleanup } from './process-safety.mjs';
 
@@ -347,6 +348,8 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
       }
       let action = 'unchanged';
       let bridgeWarning = null;
+      let accountRecovery = null;
+      let accountRetryStarted = false;
       try {
         const runCommand = async (command, extraEnv) => {
           const result = await executor(command[0], command.slice(1), { cwd: config.baseDir, env: { ...env, ...extraEnv }, timeoutMs: 120000 });
@@ -384,6 +387,8 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
           await deploy(before);
           action = 'deployed';
         } else {
+          if (state.acmeAccountRecovery?.durabilityUnconfirmed === true) fail(ACCOUNT_RECOVERY_DURABILITY_ERROR);
+          if (await accountRecoveryNeedsReview(config, job, SERVERS[config.environment], state.acmeAccountRecovery)) fail(ACCOUNT_RECOVERY_CHECKPOINT_ERROR);
           await reportPhase('credentials');
           await checkCredentials(job, env);
           if (!clientChecked) {
@@ -398,11 +403,26 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
           const clientEnv = job.challenge.provider === 'dnspod-token'
             ? dnsPodExecEnvironment(env, path.join(files.directory, 'dnspod-challenges'), config.email) : env;
           await reportPhase('acme');
-          const result = await executor(config.legoPath, buildArgs(config, job), { cwd: config.baseDir, env: clientEnv });
-          if (result.code !== 0) {
+          const executeLego = () => executor(config.legoPath, buildArgs(config, job), { cwd: config.baseDir, env: clientEnv });
+          const diagnose = (result) => {
             const output = `${result.stdout}\n${result.stderr}`;
-            const providerDiagnostic = job.challenge.provider === 'dnspod-token' ? readDnsPodDiagnostic(output) : null;
-            const diagnostic = providerDiagnostic ?? readAcmeDiagnostic(output);
+            return (job.challenge.provider === 'dnspod-token' ? readDnsPodDiagnostic(output) : null) ?? readAcmeDiagnostic(output);
+          };
+          let result = await executeLego();
+          if (isMissingAccountRecoveryFailure(result) && diagnose(result) === ACME_DIAGNOSTICS.ACCOUNT_NOT_FOUND) {
+            accountRecovery = await quarantineIncompleteAccount(config, job, SERVERS[config.environment]);
+            if (accountRecovery) {
+              state.acmeAccountRecovery = accountRecovery;
+              await writeState(files.state, state);
+              if (accountRecovery.durabilityUnconfirmed) fail(ACCOUNT_RECOVERY_DURABILITY_ERROR);
+              // One retry under the same run lock; no second recovery attempt,
+              // including on future cycles while the quarantine marker exists.
+              accountRetryStarted = true;
+              result = await executeLego();
+            }
+          }
+          if (result.code !== 0) {
+            const diagnostic = diagnose(result);
             const exitCode = Number.isSafeInteger(result.code) && result.code >= 0 ? result.code : '未知';
             fail(diagnostic ?? `lego 申请／续期失败（退出码 ${exitCode}）。请检查域名、DNS API 权限和网络；原始输出未保存，以避免泄露凭据。`);
           }
@@ -443,18 +463,20 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
         state.lastAction = action;
         await writeState(files.state, state);
         await complete({ id: job.id, ok: true, action, certificatePath: files.certificate, privateKeyPath: files.privateKey, exportFiles: state.exportFiles,
+          ...(accountRecovery ? { accountRecovery } : {}),
           ...(state.lastWarning ? { warning: state.lastWarning } : {}) });
       } catch (error) {
         const processCleanupPending = requiresProcessCleanup(error);
         state.failureCount = (state.failureCount ?? 0) + 1;
         const delay = [60000, 600000, 6000000, DAY][Math.min(state.failureCount - 1, 3)];
         state.nextAttemptAt = new Date(Date.now() + delay).toISOString();
-        state.lastError = error.message;
+        state.lastError = accountRecovery ? `已将未完成的 ACME 账户隔离保留${accountRetryStarted ? '并重试一次' : '，但尚未开始重试'}，请勿删除隔离目录。${error.message}` : error.message;
         let saveError = null;
         try { await writeState(files.state, state); }
         catch { saveError = '同时无法保存任务状态，请检查数据目录权限和磁盘空间。'; }
-        await complete({ id: job.id, ok: false, action: 'failed', error: saveError ? `${error.message} ${saveError}` : error.message,
+        await complete({ id: job.id, ok: false, action: 'failed', error: saveError ? `${state.lastError} ${saveError}` : state.lastError,
           nextAttemptAt: saveError ? null : state.nextAttemptAt, ...(saveError ? { stateError: true } : {}),
+          ...(accountRecovery ? { accountRecovery } : {}),
           ...(processCleanupPending ? { requiresProcessCleanup: true } : {}) });
         if (processCleanupPending) break;
       }

@@ -13,7 +13,7 @@ RUN test "$TARGETARCH" = "amd64" \
     && chmod 755 /out/lego
 
 FROM node:22-bookworm-slim
-ARG VERSION=0.4.2
+ARG VERSION=0.5.0
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="CertFlow" \
     org.opencontainers.image.description="HTTPS certificate issuance, renewal and management for NAS" \
@@ -39,5 +39,5 @@ COPY --chown=root:root web/ ./web/
 USER node
 EXPOSE 3390
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD node -e "fetch('http://'+(process.env.CERTFLOW_HOST==='0.0.0.0'?'127.0.0.1':process.env.CERTFLOW_HOST)+':'+process.env.CERTFLOW_PORT+'/api/health',{signal:AbortSignal.timeout(3000)}).then(async r=>{if(!r.ok||(await r.json()).app!=='https-cert-manager')process.exit(1)}).catch(()=>process.exit(1))"
+    CMD ["node", "server.mjs", "--healthcheck"]
 CMD ["node", "server.mjs"]

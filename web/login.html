@@ -1,3 +1,27 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>登录 · CertFlow</title><link rel="icon" href="/brand.svg" type="image/svg+xml"><link rel="stylesheet" href="/login.css"><script src="/login.js" defer></script></head>
-<body><main><div class="brand"><img class="brand-mark" src="/brand.svg" width="31" height="31" alt=""> CertFlow</div><p class="eyebrow">YOUR CERTIFICATE WORKSPACE</p><h1>欢迎回来</h1><p class="description">登录你的证书工作台，管理签发、部署与自动续期。</p><form id="login-form"><label for="password">管理密码</label><input id="password" name="password" type="password" autocomplete="current-password" required minlength="12" maxlength="1024" autofocus><p id="login-error" role="alert"></p><button type="submit">登录工作台 <span aria-hidden="true">→</span></button></form><p class="footnote">使用部署时设置的管理密码。<br>证书和 DNS 凭据保存在运行 CertFlow 的设备上。</p></main></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>登录 · CertFlow</title>
+  <link rel="icon" href="/brand.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/login.css">
+  <script src="/login.js" defer></script>
+</head>
+<body>
+  <main aria-labelledby="login-heading">
+    <header class="brand"><img class="brand-mark" src="/brand.svg" width="36" height="36" alt=""><div>CertFlow<span>证书管理工作台</span></div></header>
+    <div class="login-intro"><p class="eyebrow">WORKSPACE ACCESS</p><h1 id="login-heading">登录工作台</h1><p class="description">集中管理证书签发、部署与自动续期。</p></div>
+    <form id="login-form">
+      <label for="password">管理密码</label>
+      <div class="password-field"><input id="password" name="password" type="password" autocomplete="current-password" required minlength="12" maxlength="1024" autofocus aria-describedby="password-help login-error"><button id="show-password" type="button" class="reveal-password" aria-label="显示管理密码" aria-pressed="false">显示</button></div>
+      <p id="password-help" class="field-help">使用部署 CertFlow 时设置的管理密码。</p>
+      <p id="login-error" role="alert" aria-live="polite"></p>
+      <button id="login-submit" type="submit" class="submit-button"><span id="submit-label">登录工作台</span><span aria-hidden="true">→</span></button>
+    </form>
+    <footer class="footnote"><span class="footnote-mark" aria-hidden="true">◇</span><p>证书与 DNS 凭据保存在运行 CertFlow 的服务端。<br>登录后可查看任务与管理目标授权。</p></footer>
+  </main>
+  <p class="page-caption">CertFlow <span>·</span> HTTPS Certificate Manager</p>
+</body>
+</html>

@@ -9,7 +9,9 @@ export const ACME_DIAGNOSTICS = Object.freeze({
   SERVFAIL: 'ACME 验证查询返回 SERVFAIL。请检查权威 DNS 服务器和域名委派是否正常。',
   PROPAGATION_TIMEOUT: 'DNS 验证记录在时限内未通过传播检查。请核对 TXT 记录、CNAME 委派与权威 DNS 可达性，稍后再试。',
   TXT_MISMATCH: '公开 DNS 返回的 TXT 记录与本次验证不符。请检查旧 TXT 记录、CNAME 委派和 DNS 传播。',
-  ACCOUNT: 'ACME 账户信息或账户绑定未通过验证。请检查联系邮箱及证书机构账户要求。',
+  ACCOUNT_NOT_FOUND: '证书机构找不到当前 ACME 账户。可能是首次注册中断留下未完成记录；请先备份本地账户目录，再重新注册，勿直接删除账户密钥。',
+  INVALID_CONTACT: '证书机构拒绝了 ACME 联系邮箱。请检查邮箱地址及其域名是否有效，然后在配置中更正。',
+  EXTERNAL_ACCOUNT_REQUIRED: '证书机构要求外部账户绑定（EAB），当前配置未提供。请核对 ACME 服务地址和网络代理。',
   UNAUTHORIZED: '证书机构未通过域名控制权验证。请检查当前验证方式及对外可见的挑战记录或站点。',
   VALIDATION_CONNECTION: '证书机构无法连接验证目标。请检查目标的 DNS 指向、端口与防火墙。',
   DNS_QUERY: '证书机构报告 DNS 查询失败。请检查域名的权威 DNS、验证记录及委派。',
@@ -33,7 +35,9 @@ export function readAcmeDiagnostic(output) {
   if (/\bunexpected response code ['"]?SERVFAIL['"]?|\bDNS problem:\s*SERVFAIL\b/i.test(failure)) return ACME_DIAGNOSTICS.SERVFAIL;
   if (/\bpropagation:\s*time limit exceeded\b|\btime limit exceeded:\s*last error:/i.test(failure)) return ACME_DIAGNOSTICS.PROPAGATION_TIMEOUT;
   if (/\bdid not return the expected TXT record\b/i.test(failure)) return ACME_DIAGNOSTICS.TXT_MISMATCH;
-  if (['accountDoesNotExist', 'externalAccountRequired', 'invalidContact'].some(problem)) return ACME_DIAGNOSTICS.ACCOUNT;
+  if (problem('accountDoesNotExist')) return ACME_DIAGNOSTICS.ACCOUNT_NOT_FOUND;
+  if (problem('invalidContact')) return ACME_DIAGNOSTICS.INVALID_CONTACT;
+  if (problem('externalAccountRequired')) return ACME_DIAGNOSTICS.EXTERNAL_ACCOUNT_REQUIRED;
   if (problem('unauthorized')) return ACME_DIAGNOSTICS.UNAUTHORIZED;
   if (problem('connection')) return ACME_DIAGNOSTICS.VALIDATION_CONNECTION;
   if (problem('dns')) return ACME_DIAGNOSTICS.DNS_QUERY;

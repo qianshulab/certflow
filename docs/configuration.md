@@ -175,8 +175,10 @@ data/<environment>/<任务ID>/exports/<证书SHA-256>/
 | `chain.pem` | 中间证书链 | `chain` |
 | `fullchain.pem` | 域名证书与中间证书链 | `fullchain` |
 | `privkey.pem` | 无口令保护的证书私钥 | `privateKey` |
+| `cert.crt` | `cert.pem` 的同内容别名 | `certificateCrt` |
+| `privkey.key` | `privkey.pem` 的同内容别名 | `privateKeyKey` |
 
-图形界面同时提供整套 PEM 的 ZIP 下载。无效、过期或无法确认完整性的证书不可导出。
+图形界面同时提供整套 PEM 的 ZIP 下载（前四项，不重复收录别名），以及复制 PEM 文本。无效、过期或无法确认完整性的证书不可导出。
 
 ### 绿联 UGOS 管理页面
 
@@ -188,7 +190,7 @@ UGOS 界面名称与导入字段以安装版本为准。工具不会改写 UGOS 
 
 ## Nginx 与宝塔本地部署
 
-确认目标站点实际使用的证书路径，备份现有证书与 Nginx 配置，并避免多个工具同时更新同一份证书。正式环境的任务可配置：
+本节仅适用于 CertFlow 进程能够直接写入目标目录、并能在同一运行环境执行检查与重载命令的情况；NAS 中的标准镜像无法直接控制另一台服务器或任意容器。跨主机推荐使用[目标侧 HTTPS 拉取](remote-pull.md)，宝塔也可在站点 SSL 页面手动粘贴 `fullchain.pem` 与 `privkey.pem` 的内容。确认目标站点实际使用的证书路径，备份现有证书与 Nginx 配置，并避免多个工具同时更新同一份证书。正式环境的任务可配置：
 
 ```json
 "deployment": {

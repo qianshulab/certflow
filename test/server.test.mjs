@@ -507,6 +507,12 @@ test('certificate download accepts only configured jobs and fixed export kinds',
     assert.match(response.headers.get('cache-control'), /no-store/);
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), await fs.readFile(exportFiles[kind]));
   }
+  for (const [kind, original, filename] of [['certificateCrt', 'certificate', 'cert.crt'], ['privateKeyKey', 'privateKey', 'privkey.key']]) {
+    const response = await app.post('/api/export', { id: 'site', kind });
+    assert.equal(response.status, 200, `must export ${kind}`);
+    assert.match(response.headers.get('content-disposition'), new RegExp(filename.replace('.', '\\.')));
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), await fs.readFile(exportFiles[original]));
+  }
   const bundle = await app.post('/api/export', { id: 'site', kind: 'bundle' });
   assert.equal(bundle.status, 200);
   assert.equal(bundle.headers.get('content-type'), 'application/zip');

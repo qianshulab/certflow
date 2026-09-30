@@ -13,13 +13,15 @@ const exportKinds = [
   { kind: 'privateKey', filename: 'privkey.pem', label: '证书私钥 · 请妥善保管', icon: 'key' },
   { kind: 'chain', filename: 'chain.pem', label: '中间证书 · NAS 中间证书字段', icon: 'link' },
   { kind: 'fullchain', filename: 'fullchain.pem', label: '完整证书链 · Nginx / Docker', icon: 'shield' },
+  { kind: 'certificateCrt', sourceKind: 'certificate', filename: 'cert.crt', label: '域名证书 · CRT 扩展名', icon: 'file' },
+  { kind: 'privateKeyKey', sourceKind: 'privateKey', filename: 'privkey.key', label: '证书私钥 · KEY 扩展名', icon: 'key' },
 ];
 const viewNames = { overview: '证书工作台', config: '证书配置', credentials: 'DNS 凭据', exports: '导出与部署' };
 const phaseLabels = {
   preparing: '准备任务',
   credentials: '检查 DNS 凭据',
   client: '检查 ACME 客户端',
-  acme: '等待 ACME 与 DNS 验证',
+  acme: '等待 ACME 域名验证',
   certificate: '验证签发证书',
   export: '生成导出文件',
   deployment: '部署并重载服务',
@@ -53,6 +55,7 @@ let preflightRunning = false;
 let shownRunId = null;
 let progressEventsSignature = '';
 let progressAnnouncement = '';
+let distributionSignature = '';
 const dismissedRunKey = 'certflow:dismissed-run-id';
 let dismissedRunId;
 try { dismissedRunId = sessionStorage.getItem(dismissedRunKey); } catch { dismissedRunId = null; }
@@ -120,6 +123,7 @@ function switchView(view, focus = true) {
   document.title = `${viewNames[view]} · CertFlow`;
   if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
   $('draft-banner').hidden = !dirty || view === 'config';
+  if (view !== 'overview') $('run-progress').open = false;
   if (focus) $(`view-${view}`).querySelector('h1')?.focus({ preventScroll: true });
   if (view === 'config') requestAnimationFrame(() => revealSelectedJob());
 }
@@ -247,7 +251,9 @@ function renderState() {
   renderCertificates(jobs, statuses);
   renderLogs();
   renderCredentialsStatus();
+  renderManagementTls();
   renderExports(jobs, statuses);
+  renderDistribution();
   const enabled = Boolean(state.scheduler?.enabled);
   $('scheduler-toggle').checked = enabled;
   $('scheduler-badge').textContent = enabled ? '已开启' : '未开启';
@@ -277,6 +283,11 @@ function updateProgressElapsed() {
     ? stale ? '当前阶段状态暂未更新。' : `当前阶段已持续 ${elapsedSince(runtime.phaseStartedAt)}。`
     : '';
 }
+function progressPhaseLabel(phase, jobId) {
+  if (phase !== 'acme') return phaseLabels[phase] || '执行阶段';
+  const challenge = state?.config?.jobs.find((job) => job.id === jobId)?.challenge.type;
+  return challenge === 'http' ? '等待 ACME 与 HTTP 文件验证' : challenge === 'dns' ? '等待 ACME 与 DNS 验证' : phaseLabels.acme;
+}
 function renderProgress() {
   const panel = $('run-progress');
   const runtime = state?.runtime;
@@ -299,7 +310,7 @@ function renderProgress() {
   const delayed = results.filter((result) => result.action === 'backoff');
   const complete = Math.min(Number(runtime.completedCount) || 0, Number(runtime.totalJobs) || 0);
   const total = Number(runtime.totalJobs) || 0;
-  const phase = phaseLabels[runtime.currentPhase] ?? (runtime.running ? '等待下一阶段' : '本轮已结束');
+  const phase = runtime.currentPhase ? progressPhaseLabel(runtime.currentPhase, runtime.currentJob) : runtime.running ? '等待下一阶段' : '本轮已结束';
   const outcome = !connected && runtime.running ? '连接中断' : runtime.running ? '运行中'
     : runtime.error || failed.length ? '有失败' : delayed.length ? '等待重试' : '已完成';
   $('progress-state').textContent = outcome;
@@ -340,7 +351,7 @@ function renderProgress() {
     progressEventsSignature = signature;
     $('progress-events').replaceChildren(...(events.length ? events.map((event) => {
       const row = el('li', 'run-progress-event');
-      row.append(el('time', '', date(event.at, true)), el('span', 'run-progress-event-job', event.jobId || '任务'), el('span', '', phaseLabels[event.phase] || '执行阶段'));
+      row.append(el('time', '', date(event.at, true)), el('span', 'run-progress-event-job', event.jobId || '任务'), el('span', '', progressPhaseLabel(event.phase, event.jobId)));
       row.querySelector('time').dateTime = event.at;
       return row;
     }) : [el('li', 'run-progress-empty', runtime.running ? '等待阶段更新…' : '本轮没有阶段记录。')]));
@@ -412,6 +423,7 @@ function showExports(id) {
   $('export-job').value = id;
   exportSignature = '';
   renderExports(state.config.jobs, state.statuses ?? []);
+  renderDistribution();
   switchView('exports');
 }
 function renderCertificates(jobs, statuses) {
@@ -444,6 +456,9 @@ function renderCertificates(jobs, statuses) {
   if (!filtered.some((job) => job.id === selectedCertificate)) selectedCertificate = filtered[0].id;
   const activeElement = document.activeElement;
   const focusedTask = activeElement?.dataset?.selectJob;
+  const focusedAction = ['runJob', 'preflightJob'].find((key) => activeElement?.dataset?.[key]);
+  const focusedActionId = focusedAction && activeElement.dataset[focusedAction];
+  const focusedScrollArea = activeElement?.classList.contains('certificate-table-scroll');
   const scrollBefore = $('certificate-list').querySelector('.certificate-table-scroll')?.scrollLeft ?? 0;
   const verticalScrollBefore = $('certificate-list').querySelector('.certificate-table-scroll')?.scrollTop ?? 0;
   const table = el('table', 'certificate-table');
@@ -471,7 +486,7 @@ function renderCertificates(jobs, statuses) {
     row.append(name, statusCell, expiry, schedule, actionCell); body.append(row);
   }
   table.append(caption, head, body);
-  const wrapper = el('div', 'certificate-table-scroll'); wrapper.append(table);
+  const wrapper = el('div', 'certificate-table-scroll'); wrapper.tabIndex = 0; wrapper.setAttribute('aria-label', '证书任务列表，可滚动查看'); wrapper.append(table);
   const job = filtered.find((item) => item.id === selectedCertificate);
   const status = statuses.find((item) => item.id === job.id);
   const inspector = el('section', 'certificate-inspector'); inspector.setAttribute('aria-label', `任务 ${job.id} 的详情`);
@@ -506,15 +521,19 @@ function renderCertificates(jobs, statuses) {
   wrapper.scrollLeft = scrollBefore;
   wrapper.scrollTop = verticalScrollBefore;
   if (focusedTask) [...$('certificate-list').querySelectorAll('[data-select-job]')].find((node) => node.dataset.selectJob === focusedTask)?.focus({ preventScroll: true });
+  else if (focusedAction) [...$('certificate-list').querySelectorAll('button')].find((node) => node.dataset[focusedAction] === focusedActionId)?.focus({ preventScroll: true });
+  else if (focusedScrollArea) wrapper.focus({ preventScroll: true });
 }
 function renderLogs() {
   if (!state) return;
   const logs = (state.logs ?? []).filter((log) => logFilter === 'all' || ['error', 'warn', 'warning'].includes(log.level));
-  const signature = JSON.stringify(logs);
+  const signature = JSON.stringify([logFilter, logs]);
   if (signature === logSignature) return;
   logSignature = signature;
+  $('activity-count').textContent = `显示 ${Math.min(logs.length, 100)} 条${logFilter === 'error' ? '错误 / 警告' : '活动'} · 服务端保留最近 100 条记录`;
   if (!logs.length) { $('activity-list').replaceChildren(el('p', 'quiet-empty', logFilter === 'error' ? '没有错误或警告记录。' : '暂无活动记录。保存配置或开始申请后，运行结果会显示在这里。')); return; }
-  $('activity-list').replaceChildren(...logs.slice(0, 30).map((log) => {
+  const scrollTop = $('activity-list').scrollTop;
+  $('activity-list').replaceChildren(...logs.slice(0, 100).map((log) => {
     const row = el('div', 'activity-row');
     const allowedLevel = log.level === 'warning' ? 'warn' : ['success', 'error', 'warn'].includes(log.level) ? log.level : '';
     const time = el('time', 'activity-time', date(log.at, true));
@@ -522,9 +541,12 @@ function renderLogs() {
     row.append(el('span', `activity-dot ${allowedLevel}`), el('span', 'activity-message', log.message), time);
     return row;
   }));
+  $('activity-list').scrollTop = scrollTop;
 }
 function updateControls() {
   const reason = runBlocked();
+  $('run-block-reason').hidden = !reason || Boolean(state?.runtime?.running) || pending;
+  $('run-block-reason').textContent = reason ? `批量检查前需要处理：${reason}。` : '';
   $('run-all').disabled = Boolean(reason);
   $('run-all').title = reason || '检查所有任务，需要签发或续期时才申请新证书';
   $('run-all').classList.toggle('is-running', Boolean(state?.runtime?.running));
@@ -558,6 +580,8 @@ function updateControls() {
   $('clear-job-search').disabled = Boolean(block) || !jobSearchText;
   $('draft-banner').hidden = !dirty || currentView === 'config';
   document.querySelector('[data-view="config"]').classList.toggle('has-draft', dirty);
+  document.querySelector('.save-bar').dataset.dirty = String(dirty);
+  updateDistributionControls();
 }
 function freshJob(id = '') {
   return { id, enabled: true, domains: [], challenge: { type: 'dns', provider: 'dnspod-token' }, deployment: null, __checkText: '["nginx", "-t"]', __reloadText: '["nginx", "-s", "reload"]', __directory: '', __domainsText: '' };
@@ -648,6 +672,9 @@ function renderTaskNavigation(errors = []) {
   $('job-navigation-count').textContent = draft.jobs.length;
   const current = draft.jobs[selectedEditor];
   $('job-search-status').textContent = `显示 ${matches.length} / ${draft.jobs.length} 个任务${current ? ` · 当前第 ${selectedEditor + 1} 个` : ''}`;
+  const filterNote = $('job-filter-note');
+  filterNote.hidden = !current || selectedInResults;
+  if (!filterNote.hidden) filterNote.replaceChildren(el('span', '', `正在编辑“${current.id || '未命名任务'}”，它不在搜索结果中。`), button('定位当前任务', 'text-button', () => selectEditor(selectedEditor)));
   list.replaceChildren(...matches.map(({ job, index }) => {
     const choice = button('', `job-choice${index === selectedEditor ? ' selected' : ''}${invalidTasks.has(String(index)) ? ' has-errors' : ''}`, () => selectEditor(index, { focusHeading: true }));
     choice.dataset.editorIndex = String(index);
@@ -745,7 +772,7 @@ function renderEditors() {
     renderChallenge();
     challengeRow.append(method.wrapper, challengeFields);
     const advanced = el('details', 'advanced-deploy');
-    const summary = el('summary', '', '自动部署'); summary.append(el('span', '', '宝塔 / Nginx / Docker'));
+    const summary = el('summary', '', '本机自动部署'); summary.append(el('span', '', '本机服务 / 已挂载目录'));
     advanced.open = job.__deployOpen ?? Boolean(job.deployment);
     const label = el('label', 'checkbox-line');
     const enabled = el('input'); enabled.type = 'checkbox'; enabled.id = `${prefix}-deploy-enabled`; enabled.checked = Boolean(job.deployment);
@@ -754,7 +781,7 @@ function renderEditors() {
     const deploy = el('div', 'deploy-fields');
     deploy.hidden = !job.deployment;
     const note = el('div', 'deploy-note', '仅正式环境可启用。命令将在运行本工具的主机上执行，填写前请确认目标目录和命令正确。NAS 管理页面请使用手动导入。');
-    const directory = field(`${prefix}-directory`, '证书部署目录', { value: job.__directory, placeholder: '/srv/https-certs/nas-home', help: '工具将写入 fullchain.pem 和 privkey.pem；目录需有写入权限。', onInput: (value) => { job.__directory = value; } });
+    const directory = field(`${prefix}-directory`, '本机证书目录', { value: job.__directory, placeholder: '/srv/https-certs/nas-home', help: '此目录必须可从 CertFlow 所在环境访问并写入。不会推送到其他服务器；远程目标请在“导出与部署”使用目标侧拉取。', onInput: (value) => { job.__directory = value; } });
     const commands = el('div', 'form-grid');
     const check = field(`${prefix}-check`, '配置检查命令', { type: 'textarea', value: job.__checkText, rows: 2, help: 'JSON 参数数组，例如 ["nginx", "-t"]。', onInput: (value) => { job.__checkText = value; } });
     const reload = field(`${prefix}-reload`, '服务重载命令', { type: 'textarea', value: job.__reloadText, rows: 2, help: '例如 ["docker", "exec", "web-nginx", "nginx", "-s", "reload"]。', onInput: (value) => { job.__reloadText = value; } });
@@ -1017,6 +1044,26 @@ function renderCredentialsStatus() {
     $(`credential-source-${key}`).textContent = status?.source === 'saved' ? '重启服务后会自动读取' : status?.source === 'session' ? '关闭服务后清除 · 可重新填写并长期保存' : status?.source === 'environment' ? '来自运行服务的环境变量' : '填写后可自动完成 DNS 验证';
   }
 }
+function renderManagementTls() {
+  const tls = state.app?.tls;
+  const enabled = Boolean(tls?.enabled);
+  $('management-tls-badge').textContent = enabled ? 'HTTPS 已启用' : 'HTTP 引导中';
+  $('management-tls-badge').className = `pill ${enabled ? 'teal' : 'amber'}-pill`;
+  $('management-tls-summary').textContent = enabled
+    ? state.scheduler?.enabled ? '管理证书已加载；续期成功后会自动切换新证书。' : '管理证书已加载。请开启自动续期，保持后续更新。'
+    : '当前为 HTTP。先申请专用管理域名的正式证书，再设置 NAS 容器环境以启用 HTTPS。';
+  $('management-tls-details').hidden = !enabled;
+  $('management-tls-url').textContent = tls?.publicUrl || '—';
+  $('management-tls-job').textContent = tls?.jobId || '—';
+  $('management-tls-expiry').textContent = tls?.validTo ? date(tls.validTo) : '—';
+  $('management-tls-error').hidden = !tls?.error;
+  $('management-tls-error').textContent = tls?.error || '';
+  const active = (state.distributionTokens ?? []).filter(grant => !grant.revokedAt && grant.expiresAt);
+  const soon = active.filter(grant => Date.parse(grant.expiresAt) <= Date.now() + 30 * 86400000);
+  $('distribution-expiry-warning').hidden = !soon.length;
+  $('distribution-expiry-warning').textContent = soon.length
+    ? `${soon.length} 个远程拉取令牌已到期或将在 30 天内到期。请在“导出与部署”中重新授权，并更新目标服务器的令牌文件。` : '';
+}
 function renderExports(jobs, statuses) {
   const selected = $('export-job').value || jobs[0]?.id || '';
   const signature = JSON.stringify([jobs.map((job) => [job.id, job.domains]), statuses, selected, state.config?.environment, state.statusError]);
@@ -1040,9 +1087,13 @@ function renderExports(jobs, statuses) {
     const copy = el('div', 'export-file-copy'); copy.append(el('strong', '', item.filename), el('small', '', item.label));
     const download = button('下载', 'button secondary small-button', () => downloadExport(jobId, item.kind, item.filename), 'download');
     download.dataset.downloadKind = item.kind;
-    download.dataset.available = String(available && Boolean(status?.state?.exportFiles?.[item.kind]));
+    download.dataset.available = String(available && Boolean(status?.state?.exportFiles?.[item.sourceKind ?? item.kind]));
     download.setAttribute('aria-label', `下载 ${item.filename}`);
-    card.append(icon(item.icon), copy, download);
+    const copyPem = button('复制 PEM', 'text-button', () => copyExport(jobId, item.kind, item.filename));
+    copyPem.dataset.downloadKind = item.kind; copyPem.dataset.available = download.dataset.available;
+    copyPem.setAttribute('aria-label', `复制 ${item.filename} 内容`);
+    const actions = el('div', 'export-file-actions'); actions.append(copyPem, download);
+    card.append(icon(item.icon), copy, actions);
     return card;
   }));
 }
@@ -1056,6 +1107,112 @@ async function downloadExport(jobId, kind, filename) {
     setTimeout(() => URL.revokeObjectURL(url), 10000);
     toast(`${filename} 已下载。`);
   });
+}
+async function copyText(value, label) {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+    await navigator.clipboard.writeText(value);
+    toast(`${label} 已复制。`);
+  } catch {
+    $('copy-title').textContent = `复制${label}`;
+    $('copy-content').value = value;
+    $('copy-dialog').showModal();
+    $('copy-content').focus(); $('copy-content').select();
+  }
+}
+async function copyExport(jobId, kind, filename) {
+  if ((kind === 'privateKey' || kind === 'privateKeyKey') && !await confirmAction('复制证书私钥？', '私钥将进入系统剪贴板。请只粘贴到可信的目标服务，完成后清空剪贴板。', '复制私钥')) return;
+  await operate(async () => {
+    const blob = await post('/api/export', { id: jobId, kind }, true);
+    await copyText(await blob.text(), filename);
+  });
+}
+function distributionDisabledReason() {
+  if (!connected || !state) return '等待管理服务连接。';
+  if (state.distributionError) return `目标授权暂不可用：${state.distributionError}`;
+  if (!state.app?.tls?.enabled) return '先为 CertFlow 的管理域名申请正式证书，并在部署配置中启用 HTTPS，随后即可创建目标侧拉取授权。';
+  if (state.config?.environment !== 'production') return '远程拉取仅提供正式环境证书，请先将所选任务切换到正式环境。';
+  if (!$('export-job').value) return '请先选择已保存的证书任务。';
+  if (state.config?.jobs.find((job) => job.id === $('export-job').value)?.enabled === false) return '当前证书任务已暂停。请先在证书配置中启用任务，再创建目标授权。';
+  if (shutdownRequested || state.stopping) return '服务正在退出。';
+  return '';
+}
+function distributionUrl(jobId) {
+  try {
+    const base = new URL(state?.app?.tls?.publicUrl || state?.app?.publicUrl || location.origin);
+    if (base.protocol !== 'https:' || !jobId) return '';
+    return new URL(`/api/pull/${encodeURIComponent(jobId)}/bundle.zip`, base).href;
+  } catch { return ''; }
+}
+function updateDistributionControls() {
+  const reason = distributionDisabledReason();
+  for (const node of $('distribution-form').querySelectorAll('input,select,button')) node.disabled = Boolean(reason) || pending;
+  for (const node of document.querySelectorAll('[data-revoke-grant]')) node.disabled = node.dataset.revoked === 'true' || !connected || pending || shutdownRequested || Boolean(state?.stopping);
+  $('distribution-copy-url').disabled = !$('distribution-url').value;
+  $('distribution-copy-token').disabled = !$('distribution-token').value;
+  $('distribution-create').title = reason || '为当前证书创建独立的只读目标令牌';
+}
+function renderDistribution() {
+  const jobId = $('export-job').value;
+  const grants = (Array.isArray(state?.distributionTokens) ? state.distributionTokens : []).filter((grant) => grant.jobId === jobId);
+  const url = distributionUrl(jobId);
+  const reason = distributionDisabledReason();
+  $('distribution-notice').textContent = reason || '令牌只授权读取这一张证书。更改任务 ID、域名或签发环境会撤销旧授权。CertFlow 不会登录目标服务器；安装与重载由目标侧执行。';
+  $('distribution-notice').className = `banner ${state?.distributionError ? 'danger' : reason ? 'warning' : 'info'}`;
+  $('distribution-status').textContent = state?.app?.tls?.enabled ? 'HTTPS 已启用' : '需要 HTTPS';
+  $('distribution-status').className = `pill ${state?.app?.tls?.enabled ? 'teal' : 'neutral'}-pill`;
+  $('distribution-url').value = url;
+  $('distribution-url').placeholder = '启用 HTTPS 后显示拉取地址';
+  const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+  const job = state?.config?.jobs.find((item) => item.id === jobId);
+  $('distribution-example').textContent = url ? [
+    '# 目标服务器需 Python 3 和 OpenSSL。',
+    '# 先安装仓库中的 scripts/certflow-pull.py 到 /opt/certflow/。',
+    'chmod 600 /etc/certflow/pull.token',
+    'python3 /opt/certflow/certflow-pull.py \\',
+    `  --server ${shellQuote(new URL(url).origin)} \\`,
+    `  --job ${shellQuote(jobId)} \\`,
+    ...(job?.domains || []).map((domain) => `  --domain ${shellQuote(domain)} \\`),
+    '  --token-file /etc/certflow/pull.token \\',
+    `  --target ${shellQuote(`/etc/certflow/certs/${jobId}`)} \\`,
+    '  --check-command \'["nginx","-t"]\' \\',
+    '  --reload-command \'["nginx","-s","reload"]\'',
+    `# Nginx 引用 /etc/certflow/certs/${jobId}/current/fullchain.pem 和 privkey.pem。`,
+    '# 按目标环境调整命令；私有 CA 可用 --ca-bundle 提供可信 CA 文件。',
+  ].join('\n') : '启用 HTTPS 后可查看当前证书的目标侧接入示例。';
+  const signature = JSON.stringify([jobId, job?.enabled, grants.map((grant) => [grant, Boolean(grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now())])]);
+  if (signature !== distributionSignature) {
+    distributionSignature = signature;
+    const focusId = document.activeElement?.dataset.revokeGrant;
+    $('distribution-count').textContent = grants.length;
+    $('distribution-grants').replaceChildren(...(grants.length ? grants.map((grant) => {
+      const row = el('div', 'distribution-grant');
+      const info = el('div', 'distribution-grant-info');
+      info.append(el('strong', '', grant.label || '未命名目标'), el('small', '', `创建于 ${date(grant.createdAt)} · ${grant.expiresAt ? `到期 ${date(grant.expiresAt)}` : '无到期时间'}`));
+      const expired = grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now();
+      if (grant.lastUsedAt) info.append(el('small', '', `最近拉取 ${date(grant.lastUsedAt)}`));
+      const action = button(grant.revokedAt ? '已撤销' : '撤销授权', 'text-button danger-text', async () => {
+        if (!await confirmAction('撤销目标授权？', `“${grant.label || '未命名目标'}”将无法继续拉取 ${jobId} 的证书。目标服务器已安装的证书不受影响。`, '撤销授权')) return;
+        await operate(async () => {
+          await post('/api/distribution-tokens/revoke', { id: grant.id });
+          if ($('distribution-secret').dataset.grantId === grant.id) clearDistributionSecret();
+          await refresh(); toast('目标授权已撤销。'); $('distribution-grants').focus({ preventScroll: true });
+        });
+      });
+      action.dataset.revokeGrant = grant.id; action.dataset.revoked = String(Boolean(grant.revokedAt)); action.setAttribute('aria-label', `撤销 ${grant.label || '未命名目标'} 的授权`);
+      const expiring = !expired && grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now() + 30 * 86400000;
+      row.append(info, pill(grant.revokedAt ? '已撤销' : expired ? '已到期' : job?.enabled === false ? '已暂停' : expiring ? '即将到期' : '有效', grant.revokedAt || expired || job?.enabled === false ? 'neutral' : expiring ? 'amber' : 'teal'), action);
+      return row;
+    }) : [el('p', 'quiet-empty', '当前证书还没有目标授权。每台服务器建议使用独立令牌，便于单独撤销。')]));
+    if (focusId) [...$('distribution-grants').querySelectorAll('[data-revoke-grant]')].find((node) => node.dataset.revokeGrant === focusId)?.focus({ preventScroll: true });
+  }
+  updateDistributionControls();
+}
+function clearDistributionSecret() {
+  $('distribution-token').value = ''; $('distribution-token').type = 'password';
+  $('distribution-secret').hidden = true; delete $('distribution-secret').dataset.grantId;
+  $('distribution-secret-label').textContent = '';
+  $('distribution-reveal').textContent = '显示'; $('distribution-reveal').setAttribute('aria-pressed', 'false');
 }
 async function checkEnvironment(only) {
   await operate(async () => {
@@ -1091,7 +1248,7 @@ async function runJobs(only, retry = false) {
 // Forms are built once. Polling updates only status text and controls, never entered secrets.
 createCredentialPanels();
 const logout = button('退出登录', 'text-button', async () => {
-  if ((dirty || hasCredentialDraft()) && !await confirmAction('退出登录？', '当前页面还有未保存的配置或凭据输入。退出登录会丢弃这些草稿，后台续期会继续运行。', '退出登录')) return;
+  if ((dirty || hasCredentialDraft() || $('distribution-token').value) && !await confirmAction('退出登录？', '当前页面还有未保存的配置、凭据或新目标令牌。退出登录会清除这些页面内容，后台续期会继续运行。', '退出登录')) return;
   try { const response = await fetch('/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); if (!response.ok) throw new Error('退出登录失败，请重试。'); dirty = false; for (const input of document.querySelectorAll('.credential-panel input[name]')) input.value = ''; location.assign('/login'); } catch (error) { toast(error.message, true); }
 });
 logout.id = 'logout-tool'; logout.hidden = true;
@@ -1120,7 +1277,7 @@ shutdownDialog.append(shutdownActions); document.body.append(shutdownDialog);
 for (const node of document.querySelectorAll('[data-view]')) node.addEventListener('click', () => switchView(node.dataset.view));
 for (const node of document.querySelectorAll('[data-goto]')) node.addEventListener('click', () => switchView(node.dataset.goto));
 window.addEventListener('hashchange', () => switchView(location.hash.slice(1)));
-window.addEventListener('beforeunload', (event) => { if ((dirty || hasCredentialDraft()) && !shutdownRequested) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', (event) => { if ((dirty || hasCredentialDraft() || $('distribution-token').value) && !shutdownRequested) { event.preventDefault(); event.returnValue = ''; } });
 for (const id of ['confirm-cancel', 'confirm-action']) $(id).addEventListener('click', () => {
   const resolve = confirmResolve; confirmResolve = null;
   $('confirm-dialog').close(); resolve?.(id === 'confirm-action');
@@ -1208,7 +1365,43 @@ $('scheduler-toggle').addEventListener('change', () => {
     toast(enabled ? '自动续期已开启，重启服务后会恢复。请保持服务或容器运行。' : '自动续期已关闭。正在执行的任务仍会完成。');
   });
 });
-$('export-job').addEventListener('change', () => { exportSignature = ''; renderExports(state?.config?.jobs ?? [], state?.statuses ?? []); updateControls(); });
+$('export-job').addEventListener('change', () => { exportSignature = ''; renderExports(state?.config?.jobs ?? [], state?.statuses ?? []); renderDistribution(); updateControls(); });
+for (const id of ['copy-close', 'copy-done']) $(id).addEventListener('click', () => $('copy-dialog').close());
+$('copy-dialog').addEventListener('close', () => { $('copy-content').value = ''; });
+$('copy-select').addEventListener('click', () => { $('copy-content').focus(); $('copy-content').select(); });
+$('distribution-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (distributionDisabledReason() || pending) return;
+  if ($('distribution-token').value && !await confirmAction('创建另一份目标令牌？', '上一份新令牌仍在页面中。继续后将不再显示上一份令牌，请确认已保存。', '继续创建')) return;
+  const jobId = $('export-job').value;
+  const label = $('distribution-label').value.trim();
+  if (!label) { $('distribution-label').focus(); return; }
+  const days = Number($('distribution-expiry').value);
+  if (![30, 90, 365].includes(days)) return;
+  await operate(async () => {
+    const result = await post('/api/distribution-tokens', { jobId, label, expiresAt: new Date(Date.now() + days * 86400000).toISOString() });
+    if (!result.token || !result.grant?.id) throw new Error('服务端未返回完整的新授权信息，请刷新授权列表后重试。');
+    clearDistributionSecret();
+    $('distribution-token').value = result.token;
+    $('distribution-secret').dataset.grantId = result.grant.id;
+    $('distribution-secret-label').textContent = `${label} · 证书任务 ${jobId}`;
+    $('distribution-secret').hidden = false;
+    $('distribution-label').value = '';
+    await refresh();
+    $('distribution-secret').scrollIntoView({ block: 'center' });
+    $('distribution-copy-token').focus({ preventScroll: true });
+    toast('目标授权已创建，请保存仅显示一次的令牌。');
+  });
+});
+$('distribution-reveal').addEventListener('click', () => {
+  const reveal = $('distribution-token').type === 'password';
+  $('distribution-token').type = reveal ? 'text' : 'password';
+  $('distribution-reveal').textContent = reveal ? '隐藏' : '显示';
+  $('distribution-reveal').setAttribute('aria-pressed', String(reveal));
+});
+$('distribution-copy-token').addEventListener('click', () => { if ($('distribution-token').value) void copyText($('distribution-token').value, '目标令牌'); });
+$('distribution-copy-url').addEventListener('click', () => { if ($('distribution-url').value) void copyText($('distribution-url').value, '拉取地址'); });
+$('distribution-hide-token').addEventListener('click', () => { clearDistributionSecret(); $('distribution-label').focus(); });
 switchView(location.hash.slice(1) || 'overview', false);
 updateControls();
 void poll();

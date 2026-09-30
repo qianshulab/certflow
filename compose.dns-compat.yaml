@@ -1,0 +1,9 @@
+# Optional DNS-01 workaround for domains whose authoritative NS lookup is
+# unreliable even though the TXT record is visible through a chosen resolver.
+# Recursive propagation checking remains enabled; the ACME CA validates DNS
+# independently. Always combine this file with compose.yaml.
+services:
+  certflow:
+    environment:
+      LEGO_DNS_RESOLVERS: ${CERTFLOW_DNS_RESOLVERS:?Set CERTFLOW_DNS_RESOLVERS to a reachable DNS server as host:port}
+      LEGO_DNS_PROPAGATION_DISABLE_ANS: "true"

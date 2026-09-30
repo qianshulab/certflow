@@ -4,7 +4,7 @@
 
 Windows 目录中的 `lego.exe` 只供电脑本机使用。NAS 部署包不包含这个 EXE；Docker 构建会自动下载 Linux 版 lego，并把 Node.js 与网页管理服务放进容器，NAS 上无需双击任何程序。
 
-镜像地址为 **`ghcr.io/qianshulab/certflow:0.4.2`**，源代码在 [GitHub](https://github.com/qianshulab/certflow)。镜像使用 Node.js 22 与已校验 SHA-256 的 lego v5.5.2，目标架构为 DXP4800 使用的 Linux amd64。每个版本由 GitHub Actions 在 Windows / Linux 上运行测试，再构建 Linux 镜像并验证容器登录、加密凭据与重启持久化；全部通过后才发布到 GHCR。构建状态见 [Actions](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)。
+镜像地址为 **`ghcr.io/qianshulab/certflow:0.5.0`**，源代码在 [GitHub](https://github.com/qianshulab/certflow)。镜像使用 Node.js 22 与已校验 SHA-256 的 lego v5.5.2，目标架构为 DXP4800 使用的 Linux amd64。每个版本由 GitHub Actions 在 Windows / Linux 上运行测试，再构建 Linux 镜像并验证容器登录、加密凭据与重启持久化；全部通过后才发布到 GHCR。构建状态见 [Actions](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)。
 
 ## 首次部署
 
@@ -34,7 +34,7 @@ UGOS 的 Docker 应用支持“项目”形式管理 Compose。也可以通过�
 
 ## 主机网络备用方案
 
-默认 `compose.yaml` 使用 Docker 桥接网络。如果 NAS 主机可以访问 DNSPod API 和 ACME 服务，但容器访问超时，可以改用项目提供的 `compose.host-network.yaml` 覆盖文件。先确认镜像版本包含此覆盖文件所需的具体 IPv4 监听与健康检查支持；旧版 `0.4.1` 不支持，不能仅复制覆盖文件给旧容器使用。
+默认 `compose.yaml` 使用 Docker 桥接网络。如果 NAS 主机可以访问 DNSPod API 和 ACME 服务，但容器访问超时，可以改用项目提供的 `compose.host-network.yaml` 覆盖文件。将该文件放在 `compose.yaml` 所在目录。先确认镜像版本包含此覆盖文件所需的具体 IPv4 监听与健康检查支持；旧版 `0.4.1` 不支持，不能仅复制覆盖文件给旧容器使用。
 
 在 `.env` 中把 `CERTFLOW_BIND_IP` 改为 NAS 的**实际局域网 IPv4**，例如：
 
@@ -56,6 +56,25 @@ docker compose --env-file .env -f compose.yaml -f compose.host-network.yaml ps
 
 此模式使用与默认部署相同的 `certflow-data` 数据卷，不需重新输入已保存的 DNS 凭据。以后查看日志、重启或升级时仍须同时指定这两个 `-f` 文件。恢复桥接模式时，仅使用 `compose.yaml` 再执行 `up -d`；保留相同项目目录及数据卷。若主机网络模式仍超时，应分别检查 NAS 的 DNS、出站 HTTPS、代理与防火墙。
 
+## DNS 传播检查兼容方案
+
+如果 DNSPod 已建立 `_acme-challenge` TXT 记录，选定的递归解析器也能查到它，但 lego 一直等待权威 DNS 检查并最终超时，可临时使用 `compose.dns-compat.yaml`。将该文件放在 `compose.yaml` 所在目录。此文件只关闭 lego 对**所有权威名称服务器**的本地传播等待；递归解析器的 TXT 检查仍会执行，Let's Encrypt 也会从自己的网络独立验证域名。此设置不能修复错误的公共 DNS 委派；若其他公共解析器持续返回 NXDOMAIN，证书机构仍可能拒绝签发。选用前应检查并修复域名的权威 DNS 配置。参见 [lego 的 DNS-01 选项说明](https://go-acme.github.io/lego/references/ref-flags/#flags-related-to-the-dns-01-challenge)。
+
+把一个**从容器可访问、且能查询到该 TXT 记录**的递归解析器写入 `.env`，地址须包含端口；多个解析器用逗号分隔。下例地址仅用于说明，需替换为实际核验过的解析器：
+
+```dotenv
+CERTFLOW_DNS_RESOLVERS=192.168.1.1:53
+```
+
+若同时使用前述主机网络方案，按以下顺序合并三个文件；桥接网络正常时省略中间的 `-f compose.host-network.yaml`。后续升级或重建也应使用相同的 `-f` 组合。
+
+```sh
+docker compose --env-file .env -f compose.yaml -f compose.host-network.yaml -f compose.dns-compat.yaml config --quiet
+docker compose --env-file .env -f compose.yaml -f compose.host-network.yaml -f compose.dns-compat.yaml up -d
+```
+
+DNS 恢复正常后，去掉 `-f compose.dns-compat.yaml` 再执行 `up -d`，即可恢复默认的权威和递归双重传播检查；原数据卷和已保存的 DNS 凭据不受影响。
+
 ## 从源码构建（可选）
 
 想修改源码时，复制或克隆整个项目，在同一个目录完成 `.env` 配置后运行：
@@ -73,9 +92,36 @@ docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --bui
 3. 先使用测试环境验证 DNS 配置。测试证书不受浏览器信任；流程成功后切到正式环境申请可用证书。
 4. 开启自动续期。开关状态会保存，NAS/容器重启后自动恢复；界面中可查看最近结果和下一次检查时间。
 
-DNS 验证不需要把 NAS 的 80 或 443 端口开放到公网。NAS 需能访问证书机构、DNSPod API 和 DNS 解析服务。管理页面默认用于局域网；若通过反向代理使用 HTTPS，应把 `CERTFLOW_PUBLIC_URL` 改为实际 HTTPS 地址后重建容器，并按该代理的设置把请求转发到 3390。
+DNS 验证不需要把 NAS 的 80 或 443 端口开放到公网。NAS 需能访问证书机构、DNSPod API 和 DNS 解析服务。管理页面首次启动使用局域网 HTTP 地址，签发专用管理域名的正式证书后可切换为内置 HTTPS。
 
-HTTP 管理地址适合受信任的局域网；远程访问时使用 HTTPS 反向代理或受保护的内网连接。反向代理应保留浏览器使用的 Host 请求头，否则地址校验会拒绝请求。管理会话有效期为 12 小时，退出登录不会停止后台续期。停止整个工具请在 Docker 中停止项目。
+HTTP 管理地址仅用于受信任局域网内的首次配置。管理会话有效期为 12 小时，退出登录不会停止后台续期。停止整个工具请在 Docker 中停止项目。
+
+## 管理入口 HTTPS 与自动续期
+
+内置 HTTPS 使用 CertFlow 自己管理的一张正式环境证书。它与应用共用已配置的 `CERTFLOW_PORT`，无需占用 UGOS 正在使用的 443 端口。证书任务续期成功后，进程会校验新证书和私钥并更新 TLS 上下文；新连接使用新证书，已有连接自然结束。证书申请失败时继续使用上一张有效证书，并在界面显示错误。请同时开启界面的自动续期，确保 NAS 持续运行。
+
+1. 保持现有局域网 HTTP 地址登录 CertFlow，为专用管理域名建立一个**启用的 DNS 验证任务**，例如任务 ID `certflow-management`、域名 `certflow.example.com`。使用正式环境完成一次签发，确认状态为有效。证书任务的域名必须覆盖后续 HTTPS 地址中的主机名；IP 地址不适合作为此处的证书域名。
+2. 确保使用者和目标服务器能把该管理域名解析到 NAS 的可达地址。局域网可在受控的内部 DNS 中配置记录；仅完成 DNS-01 的 TXT 验证不等于浏览器能解析并连接管理域名。浏览器访问地址仍包含端口，例如 `https://certflow.example.com:3390`。
+3. 同时修改 `.env` 两项，保留已有管理密码、卷和镜像配置：
+
+   ```dotenv
+   CERTFLOW_PUBLIC_URL=https://certflow.example.com:3390
+   CERTFLOW_TLS_JOB_ID=certflow-management
+   ```
+
+4. 在项目目录检查 Compose 配置并重建。默认桥接网络使用下列命令；已启用主机网络或 DNS 兼容覆盖文件的部署，必须继续在命令中带上相同的 `-f` 文件。
+
+   ```sh
+   docker compose --env-file .env config --quiet
+   docker compose --env-file .env up -d
+   docker compose --env-file .env ps
+   ```
+
+5. 用域名和 HTTPS 地址重新登录，核对浏览器展示的证书域名与有效期，以及界面中的自动续期状态。旧的 HTTP 地址不再由该端口提供服务。CertFlow 启动时若找不到匹配、有效的证书或私钥，会拒绝启用 HTTPS；先恢复 `.env` 的局域网 HTTP 地址并清空 `CERTFLOW_TLS_JOB_ID`，修复或续签管理证书后再切换。不要通过关闭浏览器证书校验来绕过证书错误。
+
+管理域名证书续期不依赖其 A/AAAA 记录指向公网，因为 DNS-01 使用 TXT 记录；但管理界面和拉取客户端访问仍需要正确的域名解析与网络路由。只为实际使用的受信任网络开放管理端口，配合 NAS 防火墙限制来源。跨主机拉取接口仅在 CertFlow 自身接收 HTTPS 连接时开放；仅在外部反向代理终止 TLS、代理到 CertFlow 的 HTTP 端口，不会开放该接口。启用拉取时应直接连接内置 HTTPS，或让反向代理也以 HTTPS 连接 CertFlow。
+
+证书到期前若管理任务失败，先在界面检查 DNS 凭据、CA 连接及运行结果。证书已经过期且服务无法以 HTTPS 启动时，可按第 5 步临时恢复局域网 HTTP，用同一任务重新申请有效证书，再重新启用 HTTPS。恢复过程应只在受信任的局域网进行；此时跨主机令牌拉取不可用。
 
 ## 数据保存在哪里
 
@@ -114,7 +160,7 @@ volumes:
 
 在没有正在执行的申请/续期任务时停止项目，然后备份整个 `/data`，同时保留项目中的 `.env`。**必须把 `.certflow/credentials.key` 与 `.certflow/credentials.vault.json` 一起备份**，并包含 ACME 账户和私钥。不要只备份导出的证书。备份完成后重新启动项目。
 
-使用命名卷时，可在项目目录执行以下命令，把完整数据写入当前目录的 `certflow-backup.tar`；它包含私钥和凭据密钥，需自行妥善存放：
+使用命名卷时，可在项目目录执行以下命令，把完整数据写入当前目录的 `certflow-backup.tar`；它包含私钥和凭据密钥，需自行妥善存放。下列备份与升级命令以默认桥接网络为例；如果正在使用主机网络或 DNS 兼容覆盖文件，请给**每条** `docker compose` 命令加上部署时相同的 `-f` 文件组合，避免意外改变运行模式：
 
 ```sh
 docker compose stop certflow
@@ -145,6 +191,8 @@ docker compose --env-file .env up -d
 
 后续给 Docker / Nginx 服务部署时，可给指定服务额外挂载一个专用证书输出目录，并配置该服务实际可执行的检查和重载方式。不要把整个 `/data` 暴露给其他服务，其中包含所有账户、私钥及 DNS 凭据密钥。当前 Compose 没有挂载 Docker socket，也不会直接重启其他容器。
 
+对于**其他服务器**，在目标主机安装 [`certflow-pull.py`](../scripts/certflow-pull.py)，给该证书任务创建独立的只读令牌，并由目标侧定时通过内置 HTTPS 拉取、验证和安装证书。脚本仅在内容更新后执行指定的配置检查与重载命令；一个目标失效时可单独撤销其令牌。完整配置、权限和 Nginx / Docker 示例见 [远程证书拉取](remote-pull.md)。宝塔的手动导入可把同批次的 `fullchain.pem` 内容粘贴到证书框、`privkey.pem` 内容粘贴到私钥框；面板保存后的实际文件路径及重载行为需按站点核对。
+
 ## 常见问题
 
 | 现象 | 检查事项 |
@@ -162,12 +210,12 @@ docker compose --env-file .env up -d
 
 ## 构建与发布维护
 
-推送代码到 `main` 或发起 PR 会运行自动检查和 Docker 冒烟测试。推送与 `package.json` 对应的版本标签（例如 `v0.4.2`）会在全部检查通过后发布 `0.4.2` 和 `latest` 两个镜像标签。也可在 GitHub Actions 的 **Verify and build → Run workflow** 中选择 `main`，勾选 `publish` 手动构建并发布当前版本。GHCR 使用工作流的 `GITHUB_TOKEN`，无需向仓库添加个人访问 Token。
+推送代码到 `main` 或发起 PR 会运行自动检查和 Docker 冒烟测试。推送与 `package.json` 对应的版本标签（例如 `v0.5.0`）会在全部检查通过后发布 `0.5.0` 和 `latest` 两个镜像标签。也可在 GitHub Actions 的 **Verify and build → Run workflow** 中选择 `main`，勾选 `publish` 手动构建并发布当前版本。GHCR 使用工作流的 `GITHUB_TOKEN`，无需向仓库添加个人访问 Token。
 
 **维护者首次发布后需单独确认包的公开状态。** GHCR 新包默认 private，公开 GitHub 仓库不会自动保证匿名拉取。进入 [CertFlow 包页面](https://github.com/users/qianshulab/packages/container/package/certflow)的 **Package settings → Change visibility → Public**。工作流汇总会记录匿名访问结果；若显示未验证，确认可见性及网络后运行：
 
 ```sh
-node scripts/verify-registry.mjs ghcr.io/qianshulab/certflow 0.4.2
+node scripts/verify-registry.mjs ghcr.io/qianshulab/certflow 0.5.0
 ```
 
 该命令不读取 Docker 登录信息或个人 Token，成功才表示版本 manifest 可匿名读取，并输出其 SHA-256 digest。也可加上工作流记录的 `ghcr.io/qianshulab/certflow@sha256:...` 作为第四个参数，检查公开镜像与测试镜像一致。包权限与仓库权限分别管理，参见 [GitHub 容器仓库说明](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。

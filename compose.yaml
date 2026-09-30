@@ -2,7 +2,7 @@ name: certflow
 
 services:
   certflow:
-    image: ${CERTFLOW_IMAGE:-ghcr.io/qianshulab/certflow:0.4.2}
+    image: ${CERTFLOW_IMAGE:-ghcr.io/qianshulab/certflow:0.5.0}
     platform: linux/amd64
     restart: unless-stopped
     init: true
@@ -14,6 +14,7 @@ services:
       CERTFLOW_CONFIG: /data/cert-config.json
       CERTFLOW_PUBLIC_URL: ${CERTFLOW_PUBLIC_URL:?请在 .env 中填写 NAS 的实际访问地址}
       CERTFLOW_ADMIN_PASSWORD: ${CERTFLOW_ADMIN_PASSWORD:?请在 .env 中设置至少 12 位管理密码}
+      CERTFLOW_TLS_JOB_ID: ${CERTFLOW_TLS_JOB_ID:-}
       TZ: Asia/Shanghai
     ports:
       - "${CERTFLOW_BIND_IP:-0.0.0.0}:${CERTFLOW_PORT:-3390}:3390"

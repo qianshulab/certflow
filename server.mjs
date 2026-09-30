@@ -1,4 +1,7 @@
 import http from 'node:http';
+import https from 'node:https';
+import tls from 'node:tls';
+import { isIP } from 'node:net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from 'node:crypto';
@@ -12,16 +15,18 @@ import { createAccess } from './src/access.mjs';
 import { validateDnsPodCredentials } from './src/dnspod-token.mjs';
 import { preflight } from './src/preflight.mjs';
 import { createZip } from './src/zip.mjs';
+import { createDistributionTokenStore, scopeFingerprint } from './src/distribution-tokens.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.4.2';
+const VERSION = '0.5.0';
 const PROVIDERS = {
   'dnspod-token': ['DNSPOD_API_ID', 'DNSPOD_API_TOKEN'],
   tencentcloud: ['TENCENTCLOUD_SECRET_ID', 'TENCENTCLOUD_SECRET_KEY'],
   cloudflare: ['CF_DNS_API_TOKEN'],
   alidns: ['ALICLOUD_ACCESS_KEY', 'ALICLOUD_SECRET_KEY'],
 };
-const EXPORT_NAMES = { certificate: 'cert.pem', chain: 'chain.pem', fullchain: 'fullchain.pem', privateKey: 'privkey.pem' };
+const EXPORT_NAMES = { certificate: 'cert.pem', chain: 'chain.pem', fullchain: 'fullchain.pem', privateKey: 'privkey.pem', certificateCrt: 'cert.crt', privateKeyKey: 'privkey.key' };
+const BUNDLE_KINDS = ['certificate', 'chain', 'fullchain', 'privateKey'];
 const ACTION_NAMES = { issued: '签发并导出完成', renewed: '续期并导出完成', deployed: '证书部署完成', unchanged: '检查完成，证书无需续期', backoff: '等待下次重试', failed: '执行失败' };
 const PROGRESS_PHASES = new Set(['preparing', 'credentials', 'client', 'acme', 'certificate', 'export', 'deployment']);
 const MAX_PHASE_HISTORY = 20;
@@ -32,6 +37,88 @@ class ApiError extends Error {
   constructor(status, message, details = {}) { super(message); this.status = status; this.details = details; }
 }
 const reject = (status, message, details) => { throw new ApiError(status, message, details); };
+
+function managementTlsJob(config, jobId, publicUrl) {
+  let address;
+  try { address = new URL(publicUrl); } catch { /* Report a safe configuration error below. */ }
+  if (!address || address.protocol !== 'https:' || isIP(address.hostname) || !address.hostname.includes('.')) {
+    throw new Error('内置 HTTPS 必须设置 CERTFLOW_PUBLIC_URL=https://管理域名:3390。');
+  }
+  const job = config.jobs.find(candidate => candidate.id === jobId);
+  if (config.environment !== 'production' || !job || job.enabled === false || job.challenge.type !== 'dns') {
+    throw new Error('CERTFLOW_TLS_JOB_ID 必须指向已启用的正式环境 DNS 证书任务。');
+  }
+  const coversHost = job.domains.some(domain => domain === address.hostname ||
+    (domain.startsWith('*.') && address.hostname.split('.').length === domain.split('.').length && address.hostname.endsWith(domain.slice(1))));
+  if (!coversHost) throw new Error('管理 HTTPS 任务的域名必须覆盖 CERTFLOW_PUBLIC_URL 中的管理域名。');
+  return { job, hostname: address.hostname };
+}
+
+async function loadManagementTls(config, jobId, publicUrl) {
+  const { job, hostname } = managementTlsJob(config, jobId, publicUrl);
+  const files = jobPaths(config, job);
+  let certificate, privateKey;
+  try {
+    const root = await fs.realpath(config.dataDir);
+    const read = async (filename, maximum) => {
+      const expected = path.join(root, path.relative(config.dataDir, filename));
+      const actual = await fs.realpath(filename);
+      const normalize = value => process.platform === 'win32' ? value.toLowerCase() : value;
+      const stat = await fs.lstat(filename);
+      if (normalize(actual) !== normalize(expected) || !stat.isFile() || stat.isSymbolicLink() || stat.size > maximum) throw new Error();
+      return fs.readFile(filename);
+    };
+    [certificate, privateKey] = await Promise.all([read(files.certificate, 4 * 1024 * 1024), read(files.privateKey, 64 * 1024)]);
+  } catch {
+    throw new Error('管理 HTTPS 证书文件缺失、不可读取或路径无效；请先在 HTTP 模式完成该任务的正式证书申请。');
+  }
+  try {
+    const metadata = inspectCertificate(certificate, privateKey, job.domains);
+    if (!new X509Certificate(certificate).checkHost(hostname, { subject: 'never', partialWildcards: false })) throw new Error();
+    const options = { cert: certificate, key: privateKey, minVersion: 'TLSv1.2' };
+    // Parse the complete candidate before it can replace the serving context.
+    tls.createSecureContext(options);
+    return { options, metadata, hostname, materialHash: hash(certificate) + hash(privateKey) };
+  } catch {
+    throw new Error('管理 HTTPS 证书或私钥无效、未生效、已过期，或域名/私钥不匹配；原有 HTTPS 上下文不会被替换。');
+  }
+}
+
+// Probe the configured listener with the public hostname and a trusted chain.
+export async function checkHealth({ host = process.env.CERTFLOW_HOST || '127.0.0.1', port = Number(process.env.CERTFLOW_PORT || 3390),
+  publicUrl = process.env.CERTFLOW_PUBLIC_URL, tlsJobId = process.env.CERTFLOW_TLS_JOB_ID, ca } = {}) {
+  if (isIP(host) !== 4 || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('健康检查监听地址无效。');
+  const hostname = host === '0.0.0.0' ? '127.0.0.1' : host;
+  const secure = Boolean(tlsJobId);
+  const own = new URL(publicUrl || `http://${hostname}:${port}`);
+  if (secure && (own.protocol !== 'https:' || isIP(own.hostname))) throw new Error('HTTPS 健康检查需要管理域名。');
+  await new Promise((resolve, rejectProbe) => {
+    const request = (secure ? https : http).get({ hostname, port, path: '/api/health', agent: false,
+      headers: { Host: own.host }, ...(secure ? { servername: own.hostname, ...(ca ? { ca } : {}) } : {}) }, response => {
+      if (secure) {
+        const certificate = response.socket.getPeerCertificate();
+        if (tls.checkServerIdentity(own.hostname, certificate) || Date.parse(certificate.valid_from) > Date.now() || Date.parse(certificate.valid_to) <= Date.now()) {
+          response.resume(); rejectProbe(new Error('HTTPS 健康检查证书无效。')); return;
+        }
+      }
+      let body = '';
+      response.on('data', chunk => {
+        body += chunk;
+        if (body.length > 4096) request.destroy(new Error('健康检查响应过大。'));
+      });
+      response.on('error', rejectProbe);
+      response.on('end', () => {
+        try {
+          if (response.statusCode !== 200 || JSON.parse(body).app !== 'https-cert-manager') throw new Error();
+          resolve();
+        } catch { rejectProbe(new Error('健康检查失败。')); }
+      });
+    });
+    const timeout = setTimeout(() => request.destroy(new Error('健康检查超时。')), 3000);
+    request.on('close', () => clearTimeout(timeout));
+    request.on('error', rejectProbe);
+  });
+}
 
 function editableConfig(config) {
   return {
@@ -61,7 +148,7 @@ async function readJsonBody(request, maxBytes = DEFAULT_BODY_LIMIT) {
   return body;
 }
 
-export async function createApp({ configPath = path.join(ROOT, 'cert-config.json'), port = 0, host = '127.0.0.1', publicUrl, adminPassword, run = runOnce, inspect = preflight, credentialStore } = {}) {
+export async function createApp({ configPath = path.join(ROOT, 'cert-config.json'), port = 0, host = '127.0.0.1', publicUrl, adminPassword, tlsJobId, run = runOnce, inspect = preflight, credentialStore } = {}) {
   const access = createAccess({ host, publicUrl, adminPassword });
   const filename = path.resolve(configPath);
   const baseDir = path.dirname(filename);
@@ -80,6 +167,7 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
   const credentials = new Map();
   const local = localPaths(filename);
   const vault = credentialStore ?? createCredentialStore({ directory: local.directory });
+  const distributionStore = createDistributionTokenStore({ directory: local.directory });
   let savedCredentials = {}, storageError = null, preferences = { autoRenew: false }, historyError = null;
   try {
     savedCredentials = await vault.load();
@@ -101,8 +189,13 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
     currentJob: null, currentPhase: null, phaseStartedAt: null, phaseHistory: [],
     completedCount: 0, totalJobs: 0, results: [], error: null };
   const scheduler = { enabled: false, nextRunAt: null, resumeError: null };
+  const pullRequests = new Map();
   let timer = null, activeRun = null, mutationBusy = false, stopping = false, closePromise = null, url;
   let historyWrite = Promise.resolve();
+  let tlsReloadPending = Promise.resolve(), tlsMaterialHash = null;
+  const tlsStatus = { enabled: Boolean(tlsJobId), jobId: tlsJobId || null,
+    publicUrl: publicUrl && new URL(publicUrl).protocol === 'https:' ? new URL(publicUrl).origin : null,
+    hostname: null, fingerprint: null, validTo: null, loadedAt: null, lastCheckedAt: null, error: null };
 
   function redact(value) {
     const clean = (text) => {
@@ -155,15 +248,19 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
   async function state() {
     const snapshot = await readConfiguration();
     let statuses = [], statusError = null;
+    let distributionTokens = [], distributionError = null;
     if (snapshot.normalized) {
       try { statuses = await getStatus(snapshot.normalized); }
       catch (error) { statusError = error.message; }
     }
+    try { distributionTokens = await distributionStore.list(); }
+    catch { distributionError = '目标授权存储不可读取；远程拉取已暂停，请检查 .certflow 目录权限及令牌文件完整性。'; }
     return redact({
       csrfToken, config: snapshot.config, configVersion: snapshot.configVersion, configError: snapshot.configError,
       configPath: filename, statuses, statusError, credentials: credentialStatus(), runtime: { ...runtime },
       credentialStorage: { ...vault.metadata, error: storageError },
-      scheduler: { ...scheduler }, logs, historyError, stopping, app: { version: VERSION, platform: process.platform, baseDir, authentication: access.requiresLogin, remote: access.remote },
+      scheduler: { ...scheduler }, logs, historyError, distributionTokens, distributionError, stopping,
+      app: { version: VERSION, platform: process.platform, baseDir, authentication: access.requiresLogin, remote: access.remote, tls: { ...tlsStatus } },
     });
   }
   function stopSchedule() {
@@ -208,6 +305,28 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
       runtime.completedCount = completed.size;
       log(result.ok ? 'success' : 'error', `${result.id}：${ACTION_NAMES[result.action] ?? result.action}${result.error ? `；${result.error}` : ''}`);
       if (result.warning) log('warning', `${result.id}：${result.warning}`);
+      if (tlsJobId && result.id === tlsJobId) {
+        tlsReloadPending = tlsReloadPending.then(async () => {
+          tlsStatus.lastCheckedAt = new Date().toISOString();
+          if (!result.ok) {
+            tlsStatus.error = '管理证书任务未成功，本次未更新 HTTPS 证书，继续使用已加载的证书。';
+            log('warning', tlsStatus.error); return;
+          }
+          try {
+            const candidate = await loadManagementTls(config, tlsJobId, publicUrl);
+            if (candidate.materialHash !== tlsMaterialHash) {
+              try { server.setSecureContext(candidate.options); }
+              catch { throw new Error('管理 HTTPS 上下文更新失败；请检查证书后重新运行管理证书任务。'); }
+              acceptTlsCandidate(candidate);
+              log('success', '管理 HTTPS 已加载更新后的证书，现有连接保持可用。');
+            }
+            tlsStatus.error = null;
+          } catch (error) {
+            tlsStatus.error = error.message;
+            log('error', `管理 HTTPS 证书更新失败，继续使用已加载的证书：${error.message}`);
+          }
+        });
+      }
     };
     const onProgress = (event) => {
       if (!runtime.running || runtime.runId !== runId) return;
@@ -241,7 +360,12 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
     }).catch((error) => {
       runtime.error = redact(error.message);
       log('error', `执行失败：${error.message}`);
-    }).finally(() => {
+      if (tlsJobId && selectedJobs.some(job => job.id === tlsJobId) && !completed.has(tlsJobId)) {
+        tlsStatus.lastCheckedAt = new Date().toISOString();
+        tlsStatus.error = '管理证书任务未成功，本次未更新 HTTPS 证书，继续使用已加载的证书。';
+      }
+    }).finally(async () => {
+      await tlsReloadPending;
       runtime.running = false; runtime.currentJob = null; runtime.currentPhase = null; runtime.phaseStartedAt = null;
       runtime.finishedAt = new Date().toISOString();
       schedule(runtime.results, Boolean(runtime.error));
@@ -266,11 +390,12 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
       const blocks = certificate.toString().match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
       const expected = { certificate: `${blocks[0]}\n`, chain: blocks.length > 1 ? `${blocks.slice(1).join('\n')}\n` : '', fullchain: `${blocks.join('\n')}\n`, privateKey };
       const entries = [];
-      for (const kind of body.kind === 'bundle' ? Object.keys(EXPORT_NAMES) : [body.kind]) {
-        const target = path.join(root, id, EXPORT_NAMES[kind]);
+      for (const kind of body.kind === 'bundle' ? BUNDLE_KINDS : [body.kind]) {
+        const sourceKind = kind === 'certificateCrt' ? 'certificate' : kind === 'privateKeyKey' ? 'privateKey' : kind;
+        const target = path.join(root, id, EXPORT_NAMES[sourceKind]);
         if ((await fs.realpath(target)) !== target || !(await fs.lstat(target)).isFile()) reject(403, '导出文件路径无效。');
         const data = await fs.readFile(target);
-        if (!data.equals(Buffer.from(expected[kind]))) reject(409, '导出文件发生变化，请重新检查证书任务。');
+        if (!data.equals(Buffer.from(expected[sourceKind]))) reject(409, '导出文件发生变化，请重新检查证书任务。');
         entries.push({ name: EXPORT_NAMES[kind], content: data });
       }
       contents = body.kind === 'bundle' ? createZip(entries) : entries[0].content;
@@ -282,11 +407,47 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
     response.end(contents);
   }
 
+  async function pullBundle(request, response, jobId) {
+    if (!tlsJobId || !request.socket.encrypted) reject(403, '远程证书拉取仅在内置 HTTPS 模式下开放。');
+    const ip = request.socket.remoteAddress ?? 'unknown';
+    const now = Date.now();
+    for (const [key, value] of pullRequests) if (value.until <= now) pullRequests.delete(key);
+    const attempts = pullRequests.get(ip) ?? { count: 0, until: now + 60_000 };
+    if (attempts.count >= 120) {
+      response.setHeader('Retry-After', '60');
+      reject(429, '拉取请求过于频繁，请稍后重试。');
+    }
+    if (pullRequests.size >= 512 && !pullRequests.has(ip)) pullRequests.delete(pullRequests.keys().next().value);
+    attempts.count++; pullRequests.set(ip, attempts);
+    const configuration = await validConfig();
+    const job = configuration.jobs.find(candidate => candidate.id === jobId);
+    if (configuration.environment !== 'production' || !job || job.enabled === false) reject(404, '正式证书任务不存在或未启用。');
+    const authorization = request.headers.authorization;
+    const match = typeof authorization === 'string' && /^Bearer (cfp_[A-Za-z0-9_-]{43})$/.exec(authorization);
+    if (!match) reject(401, '目标授权无效或已过期。');
+    const grant = await distributionStore.authenticate(match[1], jobId, scopeFingerprint(job, configuration.environment));
+    if (!grant) reject(401, '目标授权无效或已过期。');
+    await download({ id: jobId, kind: 'bundle' }, response);
+    // Usage timestamps are audit metadata. An unavailable writer must not
+    // turn a successfully delivered certificate into a retry storm.
+    void distributionStore.recordUse(grant.id).catch(() => {});
+  }
+
   function json(response, status, value) {
     response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
     response.end(JSON.stringify(redact(value)));
   }
-  const server = http.createServer(async (request, response) => {
+  function acceptTlsCandidate(candidate) {
+    tlsMaterialHash = candidate.materialHash;
+    Object.assign(tlsStatus, { hostname: candidate.hostname, fingerprint: candidate.metadata.fingerprint, validTo: candidate.metadata.validTo,
+      loadedAt: new Date().toISOString(), error: null });
+  }
+  let initialTls;
+  if (tlsJobId) {
+    initialTls = await loadManagementTls(await validConfig(), tlsJobId, publicUrl);
+    acceptTlsCandidate(initialTls);
+  }
+  const requestHandler = async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('X-Frame-Options', 'DENY');
@@ -294,12 +455,18 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     try {
       const own = new URL(access.origin(url));
-      const pathname = new URL(request.url, url).pathname;
+      const requested = new URL(request.url, url);
+      const pathname = requested.pathname;
       // Container health checks use loopback; they expose no configuration.
       if (request.method === 'GET' && pathname === '/api/health' && request.headers.host === new URL(url).host) return json(response, 200, { app: 'https-cert-manager', version: VERSION });
       if (request.headers.host !== own.host) reject(403, '访问地址与工具配置不一致，请使用配置的管理地址。');
       if (request.headers.origin && request.headers.origin !== own.origin) reject(403, '不允许跨站请求。');
       if (request.headers['sec-fetch-site'] === 'cross-site') reject(403, '不允许跨站请求。');
+      const pull = /^\/api\/pull\/([a-z0-9][a-z0-9_-]{0,63})\/bundle\.zip$/.exec(pathname);
+      if (request.method === 'GET' && pull) {
+        if (requested.search) reject(400, '拉取地址不接受查询参数。');
+        return await pullBundle(request, response, pull[1]);
+      }
       if (request.method === 'POST' && ['/auth/login', '/auth/logout'].includes(pathname)) {
         if (request.headers.origin !== own.origin) reject(403, '登录操作必须来自当前管理页面。');
         const body = await readJsonBody(request);
@@ -341,10 +508,40 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
           if (body.version !== current.configVersion) reject(409, '配置已被其他窗口更新，请刷新后再保存。');
           let normalized;
           try { normalized = validateConfig(body.config, baseDir); } catch (error) { reject(400, error.message); }
+          if (tlsJobId) {
+            try { managementTlsJob(normalized, tlsJobId, publicUrl); } catch (error) { reject(400, error.message); }
+            const currentManagement = current.normalized?.jobs.find(job => job.id === tlsJobId);
+            const nextManagement = normalized.jobs.find(job => job.id === tlsJobId);
+            if (!currentManagement || current.normalized.dataDir !== normalized.dataDir ||
+                scopeFingerprint(currentManagement, current.normalized.environment) !== scopeFingerprint(nextManagement, normalized.environment)) {
+              reject(400, '管理 HTTPS 正在使用此任务与数据目录。更改管理证书域名请先签发新任务，再切换 CERTFLOW_TLS_JOB_ID；迁移数据目录请先切回 HTTP 启动模式。');
+            }
+          }
+          const nextJobs = new Map(normalized.jobs.map(job => [job.id, job]));
+          const formerJobs = current.normalized?.jobs ?? [];
+          const changedScope = formerJobs.filter(job => {
+            const next = nextJobs.get(job.id);
+            return !next || scopeFingerprint(job, current.normalized.environment) !== scopeFingerprint(next, normalized.environment);
+          }).map(job => job.id);
+          if (!current.normalized) {
+            const grants = await distributionStore.list();
+            changedScope.push(...grants.map(grant => grant.jobId));
+          }
           const temporary = `${filename}.${randomUUID()}.tmp`;
           try {
             await fs.writeFile(temporary, `${JSON.stringify(editableConfig(normalized), null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-            await fs.rename(temporary, filename);
+            // Stage the config first; failures to write it leave grants intact.
+            // Revoke before the atomic replacement so a crash cannot resurrect
+            // a grant when a deleted task ID is later reused.
+            const revoked = changedScope.length ? await distributionStore.revokeForJobs([...new Set(changedScope)]) : 0;
+            try { await fs.rename(temporary, filename); }
+            catch (error) {
+              if (revoked) {
+                log('warning', '配置未保存；受影响的目标授权已撤销，请修复存储后重新创建授权。');
+                reject(409, '配置未保存；受影响的目标授权已撤销以避免旧授权恢复。请检查配置目录权限后重新创建授权。');
+              }
+              throw error;
+            }
           } finally { await fs.rm(temporary, { force: true }); }
           log('success', '证书配置已保存，尚未执行签发。');
           return json(response, 200, await state());
@@ -415,6 +612,20 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
           return json(response, 200, await state());
         }
         if (pathname === '/api/export') return await download(body, response);
+        if (pathname === '/api/distribution-tokens') {
+          if (!tlsJobId || !request.socket.encrypted) reject(409, '先为 CertFlow 启用内置 HTTPS，再创建目标授权。');
+          const config = await validConfig();
+          const job = config.jobs.find(candidate => candidate.id === body.jobId);
+          if (config.environment !== 'production' || !job || job.enabled === false) reject(400, '只能为已启用的正式证书任务创建目标授权。');
+          const created = await distributionStore.create({ jobId: job.id, label: body.label,
+            scopeFingerprint: scopeFingerprint(job, config.environment), expiresAt: body.expiresAt });
+          return json(response, 201, created);
+        }
+        if (pathname === '/api/distribution-tokens/revoke') {
+          const grant = await distributionStore.revoke(body.id);
+          if (!grant) reject(404, '目标授权不存在。');
+          return json(response, 200, { ok: true });
+        }
         if (pathname === '/api/shutdown') {
           if (access.remote) reject(400, '请在 NAS 的 Docker 项目管理中停止容器；网页可使用退出登录。');
           stopSchedule(); json(response, 202, { message: '已停止调度，将在当前任务完成后退出。' });
@@ -423,17 +634,22 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
         reject(404, '接口不存在。');
       } finally { mutationBusy = false; }
     } catch (error) {
-      if (!response.headersSent) json(response, error.status ?? 500, { error: error.status ? error.message : '本地操作失败，请检查文件权限或配置。', ...(error instanceof ApiError ? error.details : {}) });
+      if (!response.headersSent) {
+        const status = error.status ?? error.statusCode ?? 500;
+        json(response, status, { error: status < 500 ? error.message : '本地操作失败，请检查文件权限或配置。', ...(error instanceof ApiError ? error.details : {}) });
+      }
       else response.end();
     }
-  });
+  };
+  const server = initialTls ? https.createServer(initialTls.options, requestHandler) : http.createServer(requestHandler);
   server.requestTimeout = 30000;
   server.headersTimeout = 15000;
   await new Promise((resolve, rejectListen) => {
     server.once('error', rejectListen);
     server.listen(port, host, () => { server.off('error', rejectListen); resolve(); });
   });
-  url = `http://127.0.0.1:${server.address().port}`;
+  url = `${initialTls ? 'https' : 'http'}://127.0.0.1:${server.address().port}`;
+  if (initialTls) log('success', '内置管理 HTTPS 已启动，后续证书任务成功后将自动检查并加载更新。');
   log('info', '图形界面已启动。填写配置后，可先在测试环境检查申请流程。');
   if (historyError) log('error', historyError);
   if (storageError) log('error', storageError);
@@ -453,6 +669,7 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
         // while shutdown waits. Drain those requests before flushing history.
         await new Promise((resolve, rejectClose) => server.close((error) => error ? rejectClose(error) : resolve()));
         await historyWrite;
+        await distributionStore.flush();
         credentials.clear(); secretValues.clear();
         access.clear();
       })();
@@ -463,14 +680,15 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { config: { type: 'string', default: process.env.CERTFLOW_CONFIG || path.join(ROOT, 'cert-config.json') }, port: { type: 'string', default: process.env.CERTFLOW_PORT || '3390' }, host: { type: 'string', default: process.env.CERTFLOW_HOST || '127.0.0.1' }, help: { type: 'boolean', short: 'h' } } });
+  const { values } = parseArgs({ options: { config: { type: 'string', default: process.env.CERTFLOW_CONFIG || path.join(ROOT, 'cert-config.json') }, port: { type: 'string', default: process.env.CERTFLOW_PORT || '3390' }, host: { type: 'string', default: process.env.CERTFLOW_HOST || '127.0.0.1' }, healthcheck: { type: 'boolean' }, help: { type: 'boolean', short: 'h' } } });
   if (values.help) { console.log('图形界面：node server.mjs [--config 配置路径] [--port 3390]\n仅监听本机 127.0.0.1。'); return; }
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('端口必须为 1–65535 的整数。');
+  if (values.healthcheck) { await checkHealth({ host: values.host, port }); return; }
   let adminPassword = process.env.CERTFLOW_ADMIN_PASSWORD;
   if (process.env.CERTFLOW_ADMIN_PASSWORD_FILE) adminPassword = (await fs.readFile(process.env.CERTFLOW_ADMIN_PASSWORD_FILE, 'utf8')).trim();
-  const app = await createApp({ configPath: values.config, port, host: values.host, publicUrl: process.env.CERTFLOW_PUBLIC_URL, adminPassword });
-  console.log(`HTTPS 证书管理器：${app.url}\n关闭网页不会停止服务。按 Ctrl+C 停止服务及后续自动续期。`);
+  const app = await createApp({ configPath: values.config, port, host: values.host, publicUrl: process.env.CERTFLOW_PUBLIC_URL, adminPassword, tlsJobId: process.env.CERTFLOW_TLS_JOB_ID });
+  console.log(`HTTPS 证书管理器：${process.env.CERTFLOW_PUBLIC_URL || app.url}\n关闭网页不会停止服务。按 Ctrl+C 停止服务及后续自动续期。`);
   const stop = () => { void app.close().catch((error) => { console.error(error.message); process.exitCode = 1; }); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
 }

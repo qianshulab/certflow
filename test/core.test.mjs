@@ -174,9 +174,9 @@ test('ACME failure classification persists only a fixed diagnosis and never raw 
   const executor = async (_executable, args) => {
     if (args.includes('--version')) return version;
     if (args.includes('--help')) return help;
-    return mode === 'classified'
-      ? { code: 1, stdout: '', stderr: `Could not obtain certificates:\n[${privateText}] urn:ietf:params:acme:error:rateLimited` }
-      : { code: 'private-exit-code', stdout: privateText, stderr: 'unrecognized error' };
+    if (mode === 'classified') return { code: 1, stdout: '', stderr: `Could not obtain certificates:\n[${privateText}] urn:ietf:params:acme:error:rateLimited` };
+    if (mode === 'account') return { code: 1, stdout: '', stderr: `Could not obtain certificates:\n[${privateText}] urn:ietf:params:acme:error:accountDoesNotExist` };
+    return { code: 'private-exit-code', stdout: privateText, stderr: 'unrecognized error' };
   };
   const [classified] = await runOnce(config, { executor });
   assert.equal(classified.error, ACME_DIAGNOSTICS.RATE_LIMITED);
@@ -184,6 +184,10 @@ test('ACME failure classification persists only a fixed diagnosis and never raw 
   mode = 'unknown';
   const [fallback] = await runOnce(config, { executor, ignoreBackoff: true });
   assert.match(fallback.error, /退出码 未知/);
+  mode = 'account';
+  const [account] = await runOnce(config, { executor, ignoreBackoff: true });
+  assert.equal(account.error, ACME_DIAGNOSTICS.ACCOUNT_NOT_FOUND);
+  assert.equal((await stateFor(config, job)).lastError, ACME_DIAGNOSTICS.ACCOUNT_NOT_FOUND);
   assert.equal(JSON.stringify(await stateFor(config, job)).includes(privateText), false);
   assert.equal(JSON.stringify(fallback).includes('private-'), false);
 });
