@@ -31,6 +31,8 @@ MAX_FILE = 1024 * 1024
 TOKEN_PATTERN = re.compile(r'cfp_[A-Za-z0-9_-]{43}\Z')
 GENERATION = re.compile(r'versions/[a-f0-9]{64}\Z')
 PEM = re.compile(rb'-----BEGIN CERTIFICATE-----\s+[^-]+-----END CERTIFICATE-----')
+MONTHS = {name: number for number, name in enumerate(('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                                                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'), 1)}
 
 
 class PullError(Exception):
@@ -253,6 +255,20 @@ def certificate_blocks(value):
     return [re.sub(rb'\s+', b'', block) for block in blocks]
 
 
+def certificate_date(details, name):
+    # OpenSSL on Windows can use CRLF, and Python's %Z handling varies by OS.
+    match = re.search(r'(?m)^' + re.escape(name) +
+                      r'=(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})\s+GMT\r?$', details)
+    if not match or match.group(1) not in MONTHS:
+        raise PullError('The certificate validity dates could not be verified.')
+    try:
+        month, day, hour, minute, second, year = match.groups()
+        return datetime.datetime(int(year), MONTHS[month], int(day), int(hour), int(minute), int(second),
+                                 tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise PullError('The certificate validity dates could not be verified.') from None
+
+
 def validate_certificate(directory, contents, domains, openssl='openssl'):
     certs = certificate_blocks(contents['cert.pem'])
     chain = certificate_blocks(contents['chain.pem'])
@@ -269,11 +285,7 @@ def validate_certificate(directory, contents, domains, openssl='openssl'):
     if sans != domains or re.search(r'(?:IP Address|URI|email):', details):
         raise PullError('The certificate does not match the complete expected domain set.')
     now = datetime.datetime.now(datetime.timezone.utc)
-    try:
-        dates = [datetime.datetime.strptime(re.search(name + r'=(.+)', details).group(1), '%b %d %H:%M:%S %Y %Z').replace(tzinfo=datetime.timezone.utc)
-                 for name in ('notBefore', 'notAfter')]
-    except (AttributeError, ValueError):
-        raise PullError('The certificate validity dates could not be verified.') from None
+    dates = [certificate_date(details, name) for name in ('notBefore', 'notAfter')]
     if not dates[0] <= now < dates[1]:
         raise PullError('The certificate is not currently valid.')
     # Parse every chain certificate as well; trust/issuance policy is enforced by the central server.

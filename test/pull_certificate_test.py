@@ -37,6 +37,13 @@ def zip_bytes(contents, extra=None):
 
 
 class PullTests(unittest.TestCase):
+    def test_openssl_dates_accept_crlf_without_platform_timezone_parsing(self):
+        details = 'notBefore=Sep 30 11:20:00 2026 GMT\r\nnotAfter=Dec 29 11:20:00 2026 GMT\r\n'
+        self.assertEqual(pull.certificate_date(details, 'notBefore').isoformat(), '2026-09-30T11:20:00+00:00')
+        self.assertEqual(pull.certificate_date(details, 'notAfter').isoformat(), '2026-12-29T11:20:00+00:00')
+        with self.assertRaises(pull.PullError):
+            pull.certificate_date('notBefore=Sep 30 11:20:00 2026 PST\r\n', 'notBefore')
+
     @classmethod
     def setUpClass(cls):
         cls.fixture = tempfile.TemporaryDirectory(prefix='.certflow-pull-tls-', dir=Path.home())

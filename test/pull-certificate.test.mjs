@@ -26,7 +26,8 @@ test('portable pull client: real HTTPS, validated bundles, private storage and s
     child.once('close', code => resolve({ code, output }));
   });
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /Ran 11 tests/);
+  const count = Number(/Ran (\d+) tests/.exec(result.output)?.[1]);
+  assert.ok(count >= 12, `Expected the complete pull-client suite, got ${count} tests.`);
   if (process.platform === 'linux') assert.doesNotMatch(result.output, /skipped=/, 'Linux must exercise all pull-client tests.');
   else if (result.output.includes('skipped=')) t.diagnostic('Some POSIX symlink/crash transaction cases require Linux; the complete suite also runs on Linux CI.');
 });
