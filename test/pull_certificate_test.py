@@ -69,14 +69,14 @@ class PullTests(unittest.TestCase):
         self.domains = {'example.com', '*.example.com'}
 
     def assert_symlinks_available(self):
+        if os.name != 'posix':
+            self.skipTest('Target-side atomic directory transactions are supported on POSIX/Linux; Linux CI exercises them.')
         try:
             link = self.directory / 'symlink-check'
             os.symlink('target', link, target_is_directory=True)
             link.unlink()
         except OSError:
-            if os.name == 'posix':
-                raise
-            self.skipTest('Windows host cannot create directory symlinks; Linux CI exercises transactions.')
+            raise
 
     @contextlib.contextmanager
     def server(self, data=None, redirect=None):
