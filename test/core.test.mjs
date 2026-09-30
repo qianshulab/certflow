@@ -621,20 +621,22 @@ test('a lock from another container namespace is retained even if its PID is loc
   assert.equal(await fs.readFile(lock, 'utf8'), content);
 });
 
-test('a subprocess timeout terminates its harmless child and grandchild before they can write a delayed marker', async (t) => {
+test('a subprocess timeout stops its child and grandchild before reporting completed cleanup', async (t) => {
   const { directory } = await workspace(t);
   const marker = path.join(directory, 'delayed-marker');
   const ready = path.join(directory, 'grandchild-ready');
   const pids = path.join(directory, 'fixture-pids');
   const register = `require('node:fs').appendFileSync(${JSON.stringify(pids)}, String(process.pid) + '\\n');`;
-  const grandchild = `${register} require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'ready'); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'orphan survived'), 4500); setInterval(() => {}, 1000);`;
+  const grandchild = `${register} require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'ready'); let ticks = 0; setInterval(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, String(++ticks)), 100);`;
   const child = `${register} require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true }); setInterval(() => {}, 1000);`;
   const parent = `${register} require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true }); setInterval(() => {}, 1000);`;
   try {
     await assert.rejects(runProcess(process.execPath, ['-e', parent], { cwd: directory, timeoutMs: 2500 }), /超时，已终止进程树/);
     assert.equal(await fs.readFile(ready, 'utf8'), 'ready', 'the grandchild must start so this exercises tree termination');
-    await new Promise(resolve => setTimeout(resolve, 2700));
-    await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+    const before = await fs.readFile(marker, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+    await new Promise(resolve => setTimeout(resolve, 1800));
+    const after = await fs.readFile(marker, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+    assert.equal(after, before, 'the grandchild must not write after process cleanup reports success');
   } finally {
     // In the event of a regression, stop only PIDs recorded by this test fixture.
     const content = await fs.readFile(pids, 'utf8').catch(() => '');
