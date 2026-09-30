@@ -32,3 +32,7 @@ v0.5.1 是针对 [v0.5.0 已知问题](RELEASE-0.5.0.md#已知问题与升级说
 管理证书的下一次真实续期、TLS 热更新以及其他服务器实际拉取并重载 Nginx/Docker，均需在发生后单独记录。发布时不应把单次签发、模拟续期或接口拉取成功写成这些事件已经完成。本机 Clash Verge 的 fake-IP DNS 将管理域名解析为 `198.18.0.64`，Chrome 直开仍会连接失败；显式解析到 NAS 地址时，域名和证书校验正常。该客户端须配置管理域名直连或修正 DNS 规则后再做浏览器视觉验收。
 
 Linux 原生安装应确保服务管理器在主进程异常退出时清理其子进程；若旧的 lego 或部署子进程可能继续运行，须先人工确认后再启动新一轮任务。NAS 的 Docker 重建会清理旧容器进程。Linux 的 `.run.lock` 和 `.cert-deploy.lock` 是长期保留的锁标记文件，不应删除。
+
+## 发布后打包核验
+
+Windows PowerShell 5 读取不带 BOM 的 UTF-8 脚本时，中文文件名可能被错误解码。主分支提交 [2a5247d](https://github.com/qianshulab/certflow/commit/2a5247df8ab75c3dcf12d24311371027e861e058) 修正了 NAS ZIP 打包脚本，并在 [后续 CI 运行 #36718136296](https://github.com/qianshulab/certflow/actions/runs/36718136296) 中通过 Windows 打包、双平台测试和 Linux 容器冒烟。该提交晚于 v0.5.1 标签，不改变已发布镜像；从源代码重新生成 ZIP 时请使用主分支。当前本地生成的 `CertFlow-NAS-v0.5.1.zip` 的 SHA-256 为 `C93BDEEFA3FFFE93CBFC225D4B5AB52AE61C0ECC8EA4EA9A871B3AACE5F89F33`。
