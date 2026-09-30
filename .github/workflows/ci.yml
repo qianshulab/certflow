@@ -43,6 +43,10 @@ jobs:
           set -o pipefail
           mkdir -p reports
           npm test 2>&1 | tee reports/node-tests.txt
+      - name: Verify Windows PowerShell NAS release archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: powershell -NoProfile -File scripts/package-nas.ps1
       - name: Preserve test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
