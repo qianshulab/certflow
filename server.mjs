@@ -18,7 +18,7 @@ import { createZip } from './src/zip.mjs';
 import { createDistributionTokenStore, scopeFingerprint } from './src/distribution-tokens.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 const PROVIDERS = {
   'dnspod-token': ['DNSPOD_API_ID', 'DNSPOD_API_TOKEN'],
   tencentcloud: ['TENCENTCLOUD_SECRET_ID', 'TENCENTCLOUD_SECRET_KEY'],
@@ -308,7 +308,7 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
       if (tlsJobId && result.id === tlsJobId) {
         tlsReloadPending = tlsReloadPending.then(async () => {
           tlsStatus.lastCheckedAt = new Date().toISOString();
-          if (!result.ok) {
+          if (!result.ok && !result.certificateValidated) {
             tlsStatus.error = '管理证书任务未成功，本次未更新 HTTPS 证书，继续使用已加载的证书。';
             log('warning', tlsStatus.error); return;
           }
@@ -320,7 +320,8 @@ export async function createApp({ configPath = path.join(ROOT, 'cert-config.json
               acceptTlsCandidate(candidate);
               log('success', '管理 HTTPS 已加载更新后的证书，现有连接保持可用。');
             }
-            tlsStatus.error = null;
+            tlsStatus.error = result.ok ? null : '管理 HTTPS 已加载有效证书，但证书任务的后续步骤失败；请查看活动记录并修复。';
+            if (tlsStatus.error) log('warning', tlsStatus.error);
           } catch (error) {
             tlsStatus.error = error.message;
             log('error', `管理 HTTPS 证书更新失败，继续使用已加载的证书：${error.message}`);

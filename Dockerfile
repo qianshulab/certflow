@@ -13,7 +13,7 @@ RUN test "$TARGETARCH" = "amd64" \
     && chmod 755 /out/lego
 
 FROM node:22-bookworm-slim
-ARG VERSION=0.5.0
+ARG VERSION=0.5.1
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="CertFlow" \
     org.opencontainers.image.description="HTTPS certificate issuance, renewal and management for NAS" \
@@ -25,7 +25,7 @@ ENV NODE_ENV=production \
     CERTFLOW_PORT=3390 \
     CERTFLOW_CONFIG=/data/cert-config.json
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /app /data \
     && chown node:node /data \

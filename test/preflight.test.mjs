@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { preflight } from '../src/preflight.mjs';
 import { jobPaths, validateConfig } from '../src/core.mjs';
+import { acquireLinuxLock } from '../src/linux-lock.mjs';
 
 async function workspace(t) {
   const parent = path.resolve(os.tmpdir());
@@ -67,6 +68,53 @@ test('preflight reports existing run and deployment locks without removing or tr
   assert.equal(result.checks.find(check => check.id === 'nas:deployment').status, 'fail');
   assert.deepEqual(calls, [['--version']]);
   for (const filename of [runLock, deployLock]) assert.equal(await fs.readFile(filename, 'utf8'), content);
+});
+
+test('Linux preflight distinguishes reusable lock markers, live locks and unsafe cleanup', { skip: process.platform !== 'linux' }, async (t) => {
+  const directory = await workspace(t);
+  const value = raw();
+  value.environment = 'production';
+  value.jobs[0].deployment = { directory: './live', checkCommand: ['never-run-check'], reloadCommand: ['never-run-reload'] };
+  const config = validateConfig(value, directory);
+  const runLock = path.join(config.dataDir, config.environment, '.run.lock');
+  const deployLock = path.join(config.jobs[0].deployment.directory, '.cert-deploy.lock');
+  await fs.mkdir(path.dirname(runLock), { recursive: true });
+  await fs.mkdir(path.dirname(deployLock), { recursive: true });
+  const releaseRun = await acquireLinuxLock(runLock);
+  const releaseDeploy = await acquireLinuxLock(deployLock);
+  await releaseRun();
+  await releaseDeploy();
+  const executor = async () => ({ code: 0, stdout: 'lego version 5.5.2' });
+  const checked = () => preflight(config, { env, executor });
+
+  const reusable = await checked();
+  assert.equal(reusable.ok, true);
+  assert.equal(reusable.checks.find(check => check.id === 'run-lock').status, 'pass');
+  assert.equal(reusable.checks.find(check => check.id === 'nas:deployment').status, 'warning');
+  for (const filename of [runLock, deployLock]) {
+    assert.deepEqual(JSON.parse(await fs.readFile(filename, 'utf8')), { protocol: 'certflow-flock-v1' });
+  }
+
+  const holdRun = await acquireLinuxLock(runLock);
+  try {
+    const busy = await checked();
+    assert.equal(busy.checks.find(check => check.id === 'run-lock').status, 'fail');
+    assert.match(busy.checks.find(check => check.id === 'run-lock').detail, /正在运行/);
+  } finally { await holdRun(); }
+
+  const holdDeploy = await acquireLinuxLock(deployLock);
+  try {
+    const busy = await checked();
+    assert.equal(busy.checks.find(check => check.id === 'nas:deployment').status, 'fail');
+    assert.match(busy.checks.find(check => check.id === 'nas:deployment').detail, /另一进程/);
+  } finally { await holdDeploy(); }
+
+  await fs.writeFile(`${runLock}.unsafe`, 'process cleanup unconfirmed\n');
+  await fs.writeFile(`${deployLock}.unsafe`, 'process cleanup unconfirmed\n');
+  const unsafe = await checked();
+  assert.equal(unsafe.checks.find(check => check.id === 'run-lock').status, 'fail');
+  assert.equal(unsafe.checks.find(check => check.id === 'nas:deployment').status, 'fail');
+  assert.match(unsafe.checks.find(check => check.id === 'run-lock').detail, /\.unsafe/);
 });
 
 test('preflight isolates corrupt job state, checks only selected jobs, and preserves its bytes', async (t) => {

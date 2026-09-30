@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { deployCertificate, recoverDeployment } from '../src/deploy.mjs';
 import { processCleanupError, requiresProcessCleanup } from '../src/process-safety.mjs';
 
@@ -42,6 +43,11 @@ async function contents(directory) {
 
 async function assertMissing(file) {
   await assert.rejects(stat(file), { code: 'ENOENT' });
+}
+
+async function assertReleasedLock(file) {
+  if (process.platform === 'linux') assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { protocol: 'certflow-flock-v1' });
+  else await assertMissing(file);
 }
 
 test('successful deployment validates before reload and preserves private backups', async t => {
@@ -194,7 +200,7 @@ test('standalone recovery repairs files without needing a new certificate or an 
   assert.deepEqual(calls, [['reload']]);
   assert.deepEqual(await recoverDeployment(input), { recovered: false, directory });
   await assertMissing(path.join(directory, JOURNAL));
-  await assertMissing(path.join(directory, '.cert-deploy.lock'));
+  await assertReleasedLock(path.join(directory, '.cert-deploy.lock'));
 });
 
 test('directory lock rejects concurrent deploy and recovery calls, then permits a later call', async t => {
@@ -213,13 +219,51 @@ test('directory lock rejects concurrent deploy and recovery calls, then permits 
     await started;
     await assert.rejects(deployCertificate(parameters(directory, async () => assert.fail('must not run'))), { code: 'EDEPLOYLOCKED' });
     await assert.rejects(recoverDeployment({ deployment: { directory } }), { code: 'EDEPLOYLOCKED' });
-    assert.deepEqual(JSON.parse(await readFile(path.join(directory, '.cert-deploy.lock'), 'utf8')).pid, process.pid);
+    const marker = JSON.parse(await readFile(path.join(directory, '.cert-deploy.lock'), 'utf8'));
+    assert.deepEqual(marker, process.platform === 'linux' ? { protocol: 'certflow-flock-v1' } : { pid: process.pid, createdAt: marker.createdAt });
   } finally {
     release();
     await running;
   }
-  await assertMissing(path.join(directory, '.cert-deploy.lock'));
+  await assertReleasedLock(path.join(directory, '.cert-deploy.lock'));
   assert.deepEqual(await recoverDeployment({ deployment: { directory } }), { recovered: false, directory });
+});
+
+test('Linux deployment lock releases after process death and the journal rolls back', { skip: process.platform !== 'linux' }, async t => {
+  const directory = await fixture(t);
+  const deployUrl = new URL('../src/deploy.mjs', import.meta.url).href;
+  const program = `import { deployCertificate } from ${JSON.stringify(deployUrl)};
+    await deployCertificate({ certificate: Buffer.from(${JSON.stringify(NEW_CERT)}), privateKey: ${JSON.stringify(NEW_KEY)},
+      fingerprint: 'crash-test', deployment: { directory: process.env.CERTFLOW_DEPLOY_LOCK_TEST_DIR,
+        checkCommand: ['check'], reloadCommand: ['reload'] },
+      runCommand: async () => { process.stdout.write('HELD\\n'); await new Promise(() => {}); } });`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', program], {
+    env: { ...process.env, CERTFLOW_DEPLOY_LOCK_TEST_DIR: directory }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+  await new Promise((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(() => reject(new Error('child did not acquire the deployment lock')), 5000);
+    child.stdout.on('data', chunk => { output += chunk; if (output.includes('HELD\n')) { clearTimeout(timer); resolve(); } });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`child exited before acquiring the deployment lock: ${code}`)); });
+    child.once('error', reject);
+  });
+  assert.deepEqual(await contents(directory), [NEW_CERT, NEW_KEY]);
+  await assert.rejects(recoverDeployment({ deployment: { directory } }), { code: 'EDEPLOYLOCKED' });
+  child.kill('SIGKILL');
+  await new Promise(resolve => child.once('close', resolve));
+  let recovery;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    try { recovery = await recoverDeployment({ deployment: { directory, reloadCommand: ['reload'] }, runCommand: async () => {} }); break; }
+    catch (error) {
+      if (error.code !== 'EDEPLOYLOCKED' || attempt === 29) throw error;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  assert.deepEqual(recovery, { recovered: true, directory });
+  assert.deepEqual(await contents(directory), [OLD_CERT, OLD_KEY]);
+  await assertMissing(path.join(directory, JOURNAL));
+  await assertReleasedLock(path.join(directory, '.cert-deploy.lock'));
 });
 
 test('a preexisting lock is retained and requires explicit manual recovery', async t => {
@@ -239,7 +283,7 @@ test('ordinary deployment errors release the directory lock', async t => {
   const directory = await fixture(t);
   const failure = new Error('failed check');
   await assert.rejects(deployCertificate(parameters(directory, async () => { throw failure; })), error => error === failure);
-  await assertMissing(path.join(directory, '.cert-deploy.lock'));
+  await assertReleasedLock(path.join(directory, '.cert-deploy.lock'));
   assert.deepEqual(await recoverDeployment({ deployment: { directory } }), { recovered: false, directory });
 });
 
@@ -254,10 +298,14 @@ test('unconfirmed command termination retains the deployment lock and journal wi
   assert.deepEqual(await contents(directory), [NEW_CERT, NEW_KEY]);
   const journal = JSON.parse(await readFile(path.join(directory, JOURNAL), 'utf8'));
   assert.equal(journal.reloadAttempted, false);
-  assert.equal(JSON.parse(await readFile(path.join(directory, '.cert-deploy.lock'), 'utf8')).pid, process.pid);
+  const lock = path.join(directory, '.cert-deploy.lock');
+  if (process.platform === 'linux') {
+    assert.deepEqual(JSON.parse(await readFile(lock, 'utf8')), { protocol: 'certflow-flock-v1' });
+    await stat(`${lock}.unsafe`);
+  } else assert.equal(JSON.parse(await readFile(lock, 'utf8')).pid, process.pid);
   await assert.rejects(recoverDeployment({ deployment: { directory } }), { code: 'EDEPLOYLOCKED' });
   // This fixture has no running subprocess. Model the operator-confirmed recovery.
-  await rm(path.join(directory, '.cert-deploy.lock'));
+  await rm(process.platform === 'linux' ? `${lock}.unsafe` : lock);
   await recoverDeployment({ deployment: { directory } });
   assert.deepEqual(await contents(directory), [OLD_CERT, OLD_KEY]);
   await assertMissing(path.join(directory, JOURNAL));

@@ -177,6 +177,22 @@ test('failed management renewals do not reload certificate files', async t => {
   assert.equal((await request(app, '/api/health')).fingerprint, fingerprint(certificate));
 });
 
+test('a validated management certificate is loaded even when deployment fails afterward', async t => {
+  const ws = await workspace(t);
+  const app = await ws.start({ run: async () => {
+    await fs.writeFile(ws.files.certificate, renewed);
+    return [{ id: 'management', ok: false, action: 'failed', certificateValidated: true,
+      error: 'simulated post-issuance deployment failure' }];
+  } });
+  const session = await login(app);
+  await request(app, '/api/run', { ...session, body: { only: 'management' } });
+  const state = await waitForCompletion(app, session);
+  assert.equal(state.app.tls.fingerprint, fingerprint(renewed));
+  assert.match(state.app.tls.error, /后续步骤失败/);
+  assert.ok(state.logs.some(entry => entry.message.includes('管理 HTTPS 已加载更新后的证书')));
+  assert.equal((await request(app, '/api/health')).fingerprint, fingerprint(renewed));
+});
+
 test('TLS context replacement errors retain the current certificate and hide low-level details', async t => {
   const ws = await workspace(t);
   const app = await ws.start({ run: async () => {

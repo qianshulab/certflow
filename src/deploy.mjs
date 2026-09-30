@@ -2,6 +2,7 @@ import { mkdir, chmod, lstat, open, readFile, rename, rm } from 'node:fs/promise
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { requiresProcessCleanup } from './process-safety.mjs';
+import { acquireLinuxLock, markUnsafeLinuxLock } from './linux-lock.mjs';
 
 const JOURNAL = '.cert-deploy-journal.json';
 const LOCK = '.cert-deploy.lock';
@@ -149,6 +150,29 @@ function validateDeployment(deployment, runCommand) {
 async function withDeploymentLock(directory, action) {
   await privateDirectory(directory);
   const lockPath = path.join(directory, LOCK);
+  if (process.platform === 'linux') {
+    let release;
+    try {
+      release = await acquireLinuxLock(lockPath, {
+        busyMessage: `Certificate deployment lock is in use: ${lockPath}.`,
+        legacyMessage: `Certificate deployment lock exists: ${lockPath}. Confirm the previous process has stopped before manually removing this lock.`,
+      });
+    } catch (error) {
+      if (error.code === 'ELOCKED') error.code = 'EDEPLOYLOCKED';
+      throw error;
+    }
+    try {
+      const unsafe = `${lockPath}.unsafe`;
+      if (await lstat(unsafe).then(() => true, error => error.code === 'ENOENT' ? false : Promise.reject(error))) {
+        throw Object.assign(new Error(`Certificate deployment cleanup needs review: ${unsafe}. Confirm all old processes have stopped before removing this marker.`), { code: 'EDEPLOYLOCKED' });
+      }
+      try { return await action(); }
+      catch (error) {
+        if (requiresProcessCleanup(error)) await markUnsafeLinuxLock(lockPath);
+        throw error;
+      }
+    } finally { await release(); }
+  }
   let handle;
   try {
     handle = await open(lockPath, 'wx', 0o600);
@@ -209,9 +233,10 @@ export async function recoverDeployment({ deployment, runCommand }) {
 
 /**
  * The caller validates certificate contents. A directory lock serializes deployments.
- * After a process crash the operator must confirm the old process has stopped and
- * remove its stale lock; a surviving journal can then recover using the current
- * reload command. This is not pair-atomic replacement or a power-loss guarantee.
+ * On Linux the kernel lock is released if the owner dies; a surviving journal
+ * can then recover using the current reload command. An unconfirmed child-process
+ * cleanup still requires manual review. This is not pair-atomic replacement or
+ * a power-loss guarantee.
  * The server must load files only on reload. POSIX files are 0600 and directories
  * 0700; Windows ACLs are managed by the operator.
  */

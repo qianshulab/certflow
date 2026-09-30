@@ -57,11 +57,12 @@ try {
   assert.equal(detail.HostConfig.ReadonlyRootfs, true);
   assert.equal(detail.HostConfig.NetworkMode, 'none');
   await docker(['exec', name, 'lego', '--version']);
+  await docker(['exec', name, 'flock', '--version']);
   for (const phase of ['save', 'reload', 'cleared']) {
     if (phase !== 'save') { await docker(['restart', '--time', '15', name], { quiet: true }); await healthy(); }
     await docker(['exec', '-i', name, 'node', '--input-type=module', '-', phase], { input: probe });
   }
-  console.log('Docker smoke passed: Linux lego, dynamic health port, nonroot/read-only runtime, authentication, encrypted credentials and config persistence across two restarts. No external network or ACME requests.');
+  console.log('Docker smoke passed: Linux lego/flock, dynamic health port, nonroot/read-only runtime, authentication, encrypted credentials and config persistence across two restarts. No external network or ACME requests.');
 } catch (error) {
   if (created) {
     const logs = await docker(['logs', '--tail', '60', name], { quiet: true, includeStderr: true }).catch(() => '');

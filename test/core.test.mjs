@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
 import { processCleanupError } from '../src/process-safety.mjs';
 import { ACME_DIAGNOSTICS } from '../src/acme-diagnostics.mjs';
@@ -164,7 +165,9 @@ test('failed issuance persists exponential backoff and does not save raw subproc
   state = await stateFor(config, job);
   assert.equal(state.failureCount, 2);
   assert.ok(Date.parse(state.nextAttemptAt) >= Date.now() + 599000);
-  await assert.rejects(fs.stat(path.join(config.dataDir, config.environment, '.run.lock')), { code: 'ENOENT' });
+  const lock = path.join(config.dataDir, config.environment, '.run.lock');
+  if (process.platform === 'linux') assert.deepEqual(JSON.parse(await fs.readFile(lock, 'utf8')), { protocol: 'certflow-flock-v1' });
+  else await assert.rejects(fs.stat(lock), { code: 'ENOENT' });
 });
 
 test('ACME failure classification persists only a fixed diagnosis and never raw domains or secrets', async (t) => {
@@ -211,10 +214,50 @@ test('only one run may hold the environment lock and the lock is released after 
     release();
   }
   assert.equal((await first)[0].ok, true);
-  await assert.rejects(fs.stat(path.join(config.dataDir, config.environment, '.run.lock')), { code: 'ENOENT' });
+  const lock = path.join(config.dataDir, config.environment, '.run.lock');
+  if (process.platform === 'linux') assert.deepEqual(JSON.parse(await fs.readFile(lock, 'utf8')), { protocol: 'certflow-flock-v1' });
+  else await assert.rejects(fs.stat(lock), { code: 'ENOENT' });
   const [next] = await runOnce(config, { executor });
   assert.equal(next.ok, true);
   assert.equal(next.action, 'unchanged');
+});
+
+test('Linux run lock rejects a live owner and recovers after its process is killed', { skip: process.platform !== 'linux' }, async t => {
+  const { config, job } = await workspace(t);
+  const coreUrl = new URL('../src/core.mjs', import.meta.url).href;
+  const program = `import { runOnce } from ${JSON.stringify(coreUrl)};
+    const config = JSON.parse(process.env.CERTFLOW_LOCK_TEST_CONFIG);
+    await runOnce(config, { executor: async () => { process.stdout.write('HELD\\n'); await new Promise(() => {}); } });`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', program], {
+    env: { ...process.env, CERTFLOW_LOCK_TEST_CONFIG: JSON.stringify(config) }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+  await new Promise((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(() => reject(new Error('child did not acquire the run lock')), 5000);
+    child.stdout.on('data', chunk => { output += chunk; if (output.includes('HELD\n')) { clearTimeout(timer); resolve(); } });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`child exited before acquiring the run lock: ${code}`)); });
+    child.once('error', reject);
+  });
+  await assert.rejects(runOnce(config, { executor: async () => assert.fail('live owner was bypassed') }), /锁正在使用/);
+  child.kill('SIGKILL');
+  await new Promise(resolve => child.once('close', resolve));
+  const executor = async (executable, args) => {
+    if (args.includes('--version')) return version;
+    if (args.includes('--help')) return help;
+    await issueFixture(config, job);
+    return success;
+  };
+  let result;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    try { [result] = await runOnce(config, { executor }); break; }
+    catch (error) {
+      if (!/锁正在使用/.test(error.message) || attempt === 29) throw error;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(config.dataDir, config.environment, '.run.lock'), 'utf8')), { protocol: 'certflow-flock-v1' });
 });
 
 test('deployment failure is retried from the saved certificate without another lego call', async (t) => {
@@ -244,6 +287,7 @@ test('deployment failure is retried from the saved certificate without another l
   };
   const [first] = await runOnce(config, { executor });
   assert.equal(first.ok, false);
+  assert.equal(first.certificateValidated, true, 'post-issuance deployment failure retains validated certificate status');
   assert.equal(legoRuns, 1);
   const failedState = await stateFor(config, job);
   assert.equal(failedState.issuedFingerprint, expectedFingerprint);
@@ -663,6 +707,12 @@ test('unconfirmed process-tree termination stops the batch and retains its run l
   assert.equal(results[0].ok, false);
   assert.equal(results[0].requiresProcessCleanup, true);
   const filename = path.join(config.dataDir, config.environment, '.run.lock');
-  assert.equal(JSON.parse(await fs.readFile(filename, 'utf8')).pid, process.pid);
-  await assert.rejects(runOnce(config, { executor: async () => assert.fail('must not start another process') }), /遗留运行锁/);
+  if (process.platform === 'linux') {
+    assert.deepEqual(JSON.parse(await fs.readFile(filename, 'utf8')), { protocol: 'certflow-flock-v1' });
+    await fs.stat(`${filename}.unsafe`);
+    await assert.rejects(runOnce(config, { executor: async () => assert.fail('must not start another process') }), /清理未确认/);
+  } else {
+    assert.equal(JSON.parse(await fs.readFile(filename, 'utf8')).pid, process.pid);
+    await assert.rejects(runOnce(config, { executor: async () => assert.fail('must not start another process') }), /遗留运行锁/);
+  }
 });

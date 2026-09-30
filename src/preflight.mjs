@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { getStatus, runProcess } from './core.mjs';
 import { loadDnsPodCredentials } from './dnspod-token.mjs';
@@ -10,6 +11,41 @@ const PROVIDERS = {
   cloudflare: ['CF_DNS_API_TOKEN'],
   alidns: ['ALICLOUD_ACCESS_KEY', 'ALICLOUD_SECRET_KEY'],
 };
+
+const LINUX_LOCK_MARKER = '{"protocol":"certflow-flock-v1"}\n';
+
+async function probeKernelLock(fd) {
+  return new Promise((resolve, reject) => {
+    // Pass an already-open read-only descriptor. This probe must never create
+    // or alter the persistent lock marker just to check readiness.
+    const child = spawn('/usr/bin/flock', ['-x', '-n', '-E', '75', '3'],
+      { stdio: ['ignore', 'ignore', 'ignore', fd], env: {} });
+    child.once('error', reject);
+    child.once('close', (code) => resolve(code));
+  });
+}
+
+async function lockState(filename) {
+  if (process.platform !== 'linux') {
+    try { await fs.lstat(filename); return 'busy'; }
+    catch (error) { if (error.code === 'ENOENT') return 'free'; throw error; }
+  }
+  try { await fs.lstat(`${filename}.unsafe`); return 'unsafe'; }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  let marker;
+  try { marker = await fs.lstat(filename); }
+  catch (error) { if (error.code === 'ENOENT') return 'free'; throw error; }
+  if (!marker.isFile() || marker.isSymbolicLink() || marker.uid !== process.getuid() ||
+      (marker.mode & 0o077) || marker.size !== Buffer.byteLength(LINUX_LOCK_MARKER)) return 'legacy';
+  const handle = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = await handle.stat();
+    if (opened.dev !== marker.dev || opened.ino !== marker.ino ||
+        await handle.readFile('utf8') !== LINUX_LOCK_MARKER) return 'legacy';
+    const code = await probeKernelLock(handle.fd);
+    return code === 0 ? 'free' : code === 75 ? 'busy' : 'error';
+  } finally { await handle.close(); }
+}
 
 async function writableAncestor(directory) {
   let current = directory;
@@ -49,10 +85,19 @@ export async function preflight(config, { only, env = process.env, executor = ru
   } catch { add('storage', '证书数据目录', 'fail', '数据目录不可读写。Docker 中请检查持久化挂载和运行用户权限。'); }
   if (jobs.length) {
     try {
-      await fs.lstat(path.join(config.dataDir, config.environment, '.run.lock'));
-      add('run-lock', '执行锁', 'fail', '已有任务运行或遗留运行锁。请先确认所有实例及相关子进程已停止，再按故障恢复说明处理；本检查不会移除锁。');
+      const state = await lockState(path.join(config.dataDir, config.environment, '.run.lock'));
+      const detail = state === 'free' ? '未发现阻止本轮执行的运行锁。'
+        : state === 'busy' ? process.platform === 'linux'
+          ? '已有任务正在运行。请等待当前执行结束后再检查；本检查不会移除锁。'
+          : '已有任务运行或遗留运行锁。请先确认所有实例及相关子进程已停止，再按故障恢复说明处理；本检查不会移除锁。'
+          : state === 'unsafe' ? '上次进程树清理未确认。请确认相关子进程全部结束，再按故障恢复说明移除 .unsafe 标记。'
+            : state === 'legacy' ? '发现旧版或无效的运行锁标记。请确认相关进程已停止，再按故障恢复说明处理。'
+              : '无法探测系统运行锁；请检查 util-linux flock 与数据目录权限。';
+      add('run-lock', '执行锁', state === 'free' ? 'pass' : 'fail', detail);
     } catch (error) {
-      add('run-lock', '执行锁', error.code === 'ENOENT' ? 'pass' : 'fail', error.code === 'ENOENT' ? '未发现阻止本轮执行的运行锁。' : '无法检查运行锁，请检查数据目录权限。');
+      add('run-lock', '执行锁', 'fail', process.platform === 'linux'
+        ? '无法检查运行锁，请检查数据目录权限与 util-linux flock。'
+        : '无法检查运行锁，请检查数据目录权限。');
     }
   }
   const statuses = await getStatus({ ...config, jobs });
@@ -80,14 +125,18 @@ export async function preflight(config, { only, env = process.env, executor = ru
     if (job.deployment) {
       try {
         await writableAncestor(job.deployment.directory);
-        let locked = false;
-        try { await fs.lstat(path.join(job.deployment.directory, '.cert-deploy.lock')); locked = true; }
-        catch (error) { if (error.code !== 'ENOENT') throw error; }
-        add(`${job.id}:deployment`, `${job.id} · 自动部署`, locked ? 'fail' : 'warning', locked
-          ? '发现部署锁。请确认之前的部署进程已结束，再按故障恢复说明处理；本检查不会删除锁或更改证书。'
-          : '目标目录或上级目录可写。检查与重载命令仅在实际部署时执行，本次未运行。');
+        const state = await lockState(path.join(job.deployment.directory, '.cert-deploy.lock'));
+        const detail = state === 'free'
+          ? '目标目录或上级目录可写。检查与重载命令仅在实际部署时执行，本次未运行。'
+          : state === 'busy' ? process.platform === 'linux'
+            ? '部署目录正在由另一进程使用。请等待当前部署完成后再检查。'
+            : '发现部署锁。请确认之前的部署进程已结束，再按故障恢复说明处理；本检查不会删除锁或更改证书。'
+            : state === 'unsafe' ? '上次部署子进程清理未确认。请确认相关进程已停止，再按故障恢复说明移除 .unsafe 标记。'
+              : state === 'legacy' ? '发现旧版或无效的部署锁标记。请确认相关进程已停止，再按故障恢复说明处理。'
+                : '无法探测系统部署锁；请检查 util-linux flock 与目录权限。';
+        add(`${job.id}:deployment`, `${job.id} · 自动部署`, state === 'free' ? 'warning' : 'fail', detail);
       }
-      catch { add(`${job.id}:deployment`, `${job.id} · 自动部署`, 'fail', '部署目录不可写，请检查路径与容器挂载。'); }
+      catch { add(`${job.id}:deployment`, `${job.id} · 自动部署`, 'fail', '部署目录或运行锁无法检查，请检查路径权限、容器挂载与 util-linux flock。'); }
     } else add(`${job.id}:deployment`, `${job.id} · 使用方式`, 'warning', '签发后下载并安装证书。NAS 管理页面在每次续期后需要重新导入。');
   }
   return { ok: !checks.some((check) => check.status === 'fail'), checkedAt: new Date().toISOString(), checks };

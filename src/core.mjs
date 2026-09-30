@@ -9,6 +9,7 @@ import { ACME_DIAGNOSTICS, readAcmeDiagnostic } from './acme-diagnostics.mjs';
 import { ACCOUNT_RECOVERY_CHECKPOINT_ERROR, ACCOUNT_RECOVERY_DURABILITY_ERROR, accountRecoveryNeedsReview, isMissingAccountRecoveryFailure, quarantineIncompleteAccount } from './acme-account-recovery.mjs';
 import { dnsPodExecEnvironment, loadDnsPodCredentials, readDnsPodDiagnostic } from './dnspod-token.mjs';
 import { processCleanupError, requiresProcessCleanup } from './process-safety.mjs';
+import { acquireLinuxLock, markUnsafeLinuxLock } from './linux-lock.mjs';
 
 const SERVERS = {
   staging: 'https://acme-staging-v02.api.letsencrypt.org/directory',
@@ -297,10 +298,34 @@ async function needsDeployment(job, cert, state) {
   } catch (error) { if (error.code === 'ENOENT') return true; throw error; }
 }
 
+async function linuxRunLock(filename, operation) {
+  const release = await acquireLinuxLock(filename, {
+    busyMessage: `已有任务运行，运行锁正在使用：${filename}。`,
+    legacyMessage: `已有任务运行或遗留运行锁：${filename}。若上次异常退出，请确认相关进程全部结束后再删除该文件。`,
+  });
+  try {
+    const unsafe = `${filename}.unsafe`;
+    if (await fs.stat(unsafe).then(() => true, error => error.code === 'ENOENT' ? false : Promise.reject(error))) {
+      fail(`上次进程树清理未确认：${unsafe}。请确认相关 Node、lego 和部署子进程全部结束后再移除该标记。`);
+    }
+    try {
+      const result = await operation();
+      if (result.some(item => item.requiresProcessCleanup)) await markUnsafeLinuxLock(filename);
+      return result;
+    } catch (error) {
+      if (requiresProcessCleanup(error)) {
+        await markUnsafeLinuxLock(filename);
+      }
+      throw error;
+    }
+  } finally { await release(); }
+}
+
 async function withLock(config, operation) {
   const directory = path.join(config.dataDir, config.environment);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const filename = path.join(directory, '.run.lock');
+  if (process.platform === 'linux') return linuxRunLock(filename, operation);
   let lock;
   try { lock = await fs.open(filename, 'wx', 0o600); }
   catch (error) {
@@ -347,6 +372,7 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
         continue;
       }
       let action = 'unchanged';
+      let certificateValidated = false;
       let bridgeWarning = null;
       let accountRecovery = null;
       let accountRetryStarted = false;
@@ -381,6 +407,7 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
         };
         // A saved new certificate must be deployed again after a previous deployment failure.
         if (before && state.issuedFingerprint === before.fingerprint && await needsDeployment(job, before, state)) {
+          certificateValidated = true;
           await reportPhase('export');
           await saveExport(before);
           await reportPhase('deployment');
@@ -429,6 +456,7 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
           if (job.challenge.provider === 'dnspod-token') bridgeWarning = readDnsPodDiagnostic(`${result.stdout}\n${result.stderr}`);
           await reportPhase('certificate');
           const issued = await readCertificate(config, job);
+          certificateValidated = true;
           state.issuedFingerprint = issued.fingerprint;
           await reportPhase('export');
           await saveExport(issued);
@@ -476,6 +504,7 @@ export async function runOnce(config, { only, ignoreBackoff = false, executor = 
         catch { saveError = '同时无法保存任务状态，请检查数据目录权限和磁盘空间。'; }
         await complete({ id: job.id, ok: false, action: 'failed', error: saveError ? `${state.lastError} ${saveError}` : state.lastError,
           nextAttemptAt: saveError ? null : state.nextAttemptAt, ...(saveError ? { stateError: true } : {}),
+          ...(certificateValidated ? { certificateValidated: true } : {}),
           ...(accountRecovery ? { accountRecovery } : {}),
           ...(processCleanupPending ? { requiresProcessCleanup: true } : {}) });
         if (processCleanupPending) break;

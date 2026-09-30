@@ -9,7 +9,7 @@
 申请、续期、导出与本地部署，在一个深色工作台中完成。
 
 [![Verify and build](https://github.com/qianshulab/certflow/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.5.0-ff6633)](package.json)
+[![Version](https://img.shields.io/badge/version-0.5.1-ff6633)](package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-43853d)](package.json)
 [![Docker platform](https://img.shields.io/badge/Docker-linux%2Famd64-2496ed)](Dockerfile)
 
@@ -61,7 +61,7 @@ cp .env.example .env
 | --- | --- |
 | `CERTFLOW_PUBLIC_URL` | 必填。浏览器实际访问地址，例如 `http://192.168.1.100:3390`；替换为实际 NAS 地址 |
 | `CERTFLOW_ADMIN_PASSWORD` | 必填。自行设置至少 12 位管理密码；无默认密码 |
-| `CERTFLOW_IMAGE` | 默认固定为 `ghcr.io/qianshulab/certflow:0.5.0` |
+| `CERTFLOW_IMAGE` | 默认固定为 `ghcr.io/qianshulab/certflow:0.5.1` |
 | `CERTFLOW_PORT` | 默认 `3390`；修改后同步调整访问地址中的端口 |
 | `CERTFLOW_TLS_JOB_ID` | 可选。首次申请管理域名证书后填写其任务 ID，并将访问地址改为 HTTPS |
 
@@ -91,7 +91,7 @@ docker compose --env-file .env up -d
 
 ### Windows / 本机运行
 
-需要 **Node.js 22+** 与 **lego v5.5.2**。从 [lego 官方发布页](https://github.com/go-acme/lego/releases/tag/v5.5.2)下载匹配系统的程序，核对发布页提供的校验和，将其加入 `PATH`，或在界面高级设置中指定路径。
+需要 **Node.js 22+** 与 **lego v5.5.2**；Linux 原生运行还需要 `util-linux` 提供的 `flock`。从 [lego 官方发布页](https://github.com/go-acme/lego/releases/tag/v5.5.2)下载匹配系统的程序，核对发布页提供的校验和，将其加入 `PATH`，或在界面高级设置中指定路径。
 
 下载源码或克隆仓库，进入项目目录后运行：
 
@@ -159,7 +159,7 @@ npm start
 | [配置示例](cert-config.example.json) | 默认测试环境与任务结构 |
 | [Docker Nginx 示例](examples/nginx-docker-config.json) | 宿主机部署目录及容器重载命令 |
 | [安全说明](SECURITY.md) | 凭据、数据目录与管理入口保护 |
-| [版本验收记录](docs/RELEASE-0.5.0.md) | v0.5.0 的检查项目、测试证据与验证范围 |
+| [版本验收记录](docs/RELEASE-0.5.1.md) | v0.5.1 的检查项目、测试证据与验证范围 |
 
 ## 开发
 

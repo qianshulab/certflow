@@ -4,7 +4,7 @@
 
 Windows 目录中的 `lego.exe` 只供电脑本机使用。NAS 部署包不包含这个 EXE；Docker 构建会自动下载 Linux 版 lego，并把 Node.js 与网页管理服务放进容器，NAS 上无需双击任何程序。
 
-镜像地址为 **`ghcr.io/qianshulab/certflow:0.5.0`**，源代码在 [GitHub](https://github.com/qianshulab/certflow)。镜像使用 Node.js 22 与已校验 SHA-256 的 lego v5.5.2，目标架构为 DXP4800 使用的 Linux amd64。每个版本由 GitHub Actions 在 Windows / Linux 上运行测试，再构建 Linux 镜像并验证容器登录、加密凭据与重启持久化；全部通过后才发布到 GHCR。构建状态见 [Actions](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)。
+镜像地址为 **`ghcr.io/qianshulab/certflow:0.5.1`**，源代码在 [GitHub](https://github.com/qianshulab/certflow)。镜像使用 Node.js 22 与已校验 SHA-256 的 lego v5.5.2，目标架构为 DXP4800 使用的 Linux amd64。每个版本由 GitHub Actions 在 Windows / Linux 上运行测试，再构建 Linux 镜像并验证容器登录、加密凭据与重启持久化；全部通过后才发布到 GHCR。构建状态见 [Actions](https://github.com/qianshulab/certflow/actions/workflows/ci.yml)。
 
 ## 首次部署
 
@@ -210,12 +210,12 @@ docker compose --env-file .env up -d
 
 ## 构建与发布维护
 
-推送代码到 `main` 或发起 PR 会运行自动检查和 Docker 冒烟测试。推送与 `package.json` 对应的版本标签（例如 `v0.5.0`）会在全部检查通过后发布 `0.5.0` 和 `latest` 两个镜像标签。也可在 GitHub Actions 的 **Verify and build → Run workflow** 中选择 `main`，勾选 `publish` 手动构建并发布当前版本。GHCR 使用工作流的 `GITHUB_TOKEN`，无需向仓库添加个人访问 Token。
+推送代码到 `main` 或发起 PR 会运行自动检查和 Docker 冒烟测试。推送与 `package.json` 对应的版本标签（例如 `v0.5.1`）会在全部检查通过后发布 `0.5.1` 和 `latest` 两个镜像标签。也可在 GitHub Actions 的 **Verify and build → Run workflow** 中选择 `main`，勾选 `publish` 手动构建并发布当前版本。GHCR 使用工作流的 `GITHUB_TOKEN`，无需向仓库添加个人访问 Token。
 
 **维护者首次发布后需单独确认包的公开状态。** GHCR 新包默认 private，公开 GitHub 仓库不会自动保证匿名拉取。进入 [CertFlow 包页面](https://github.com/users/qianshulab/packages/container/package/certflow)的 **Package settings → Change visibility → Public**。工作流汇总会记录匿名访问结果；若显示未验证，确认可见性及网络后运行：
 
 ```sh
-node scripts/verify-registry.mjs ghcr.io/qianshulab/certflow 0.5.0
+node scripts/verify-registry.mjs ghcr.io/qianshulab/certflow 0.5.1
 ```
 
 该命令不读取 Docker 登录信息或个人 Token，成功才表示版本 manifest 可匿名读取，并输出其 SHA-256 digest。也可加上工作流记录的 `ghcr.io/qianshulab/certflow@sha256:...` 作为第四个参数，检查公开镜像与测试镜像一致。包权限与仓库权限分别管理，参见 [GitHub 容器仓库说明](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。

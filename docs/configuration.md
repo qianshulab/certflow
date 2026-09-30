@@ -6,7 +6,7 @@
 
 ## 运行环境与启动
 
-原生运行要求 Node.js 22+ 和 lego v5.5.2。客户端应从 [lego 官方发布页](https://github.com/go-acme/lego/releases/tag/v5.5.2)下载，并按发布页校验和核对；可加入 `PATH`，或通过 `legoPath` 指定绝对路径。lego v4 的命令和数据布局不受支持，参见 [lego 安装说明](https://go-acme.github.io/lego/install/)。
+原生运行要求 Node.js 22+ 和 lego v5.5.2；Linux 还须安装提供 `flock` 的 `util-linux`。客户端应从 [lego 官方发布页](https://github.com/go-acme/lego/releases/tag/v5.5.2)下载，并按发布页校验和核对；可加入 `PATH`，或通过 `legoPath` 指定绝对路径。lego v4 的命令和数据布局不受支持，参见 [lego 安装说明](https://go-acme.github.io/lego/install/)。
 
 ```sh
 node cli.mjs init
@@ -248,7 +248,9 @@ ssl_certificate_key /etc/nginx/certs/privkey.pem;
 
 ### 遗留运行锁
 
-异常退出可能留下 `.run.lock` 或 `.cert-deploy.lock`。只有确认相关 Node、lego 和部署子进程全部结束后，才能移除错误信息指明的遗留锁，再运行 `run` 完成恢复。正常任务失败无需手动删锁；其他任务仍在运行时不得删除锁。
+Linux 上的 `.run.lock` 与 `.cert-deploy.lock` 是长期保留的内核锁标记文件，**不要删除**。进程正常或异常退出后，内核会释放互斥锁；下次运行可继续使用同一文件。若出现 `.run.lock.unsafe` 或 `.cert-deploy.lock.unsafe`，表示上次无法确认子进程树已停止。先检查相关 Node、lego 和部署子进程，确认它们全部结束后，仅移除对应的 `.unsafe` 标记，再运行检查以完成恢复。Linux 原生部署应由能在服务退出时清理整个进程组的服务管理器托管；Docker 容器重启会清理旧容器进程。
+
+Windows 原生运行仍使用独占创建的运行锁文件。异常退出后若提示遗留锁，应先确认相关进程全部结束，再按错误信息移除对应锁文件。正常任务失败无需手动删锁，其他任务仍在运行时不得删除锁。
 
 ### 证书、私钥或状态损坏
 

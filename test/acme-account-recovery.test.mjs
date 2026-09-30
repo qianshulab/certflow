@@ -171,7 +171,9 @@ test('runOnce retries an incomplete account once under the same lock and preserv
     if (args.includes('--version')) return { ...success, stdout: 'lego version 5.5.2' };
     if (args.includes('--help')) return { ...success, stdout: '--cert.name --renew-force' };
     attempts += 1;
-    assert.equal(JSON.parse(await fs.readFile(path.join(config.dataDir, config.environment, '.run.lock'), 'utf8')).pid, process.pid);
+    const marker = JSON.parse(await fs.readFile(path.join(config.dataDir, config.environment, '.run.lock'), 'utf8'));
+    if (process.platform === 'linux') assert.deepEqual(marker, { protocol: 'certflow-flock-v1' });
+    else assert.equal(marker.pid, process.pid);
     if (attempts === 1) return missingAccount;
     assert.equal(attempts, 2);
     await assert.rejects(fs.lstat(account), { code: 'ENOENT' });
@@ -192,7 +194,9 @@ test('runOnce retries an incomplete account once under the same lock and preserv
   assert.deepEqual(state.acmeAccountRecovery, result.accountRecovery);
   assert.equal(state.lastError, null);
   assert.equal(JSON.stringify(state).includes('private-output-marker'), false);
-  await assert.rejects(fs.stat(path.join(config.dataDir, config.environment, '.run.lock')), { code: 'ENOENT' });
+  const lock = path.join(config.dataDir, config.environment, '.run.lock');
+  if (process.platform === 'linux') assert.deepEqual(JSON.parse(await fs.readFile(lock, 'utf8')), { protocol: 'certflow-flock-v1' });
+  else await assert.rejects(fs.stat(lock), { code: 'ENOENT' });
   let normalCalls = 0;
   const [normal] = await runOnce(config, { executor: async (_executable, args) => {
     if (args.includes('--version')) return { ...success, stdout: 'lego version 5.5.2' };
@@ -230,10 +234,20 @@ test('a fresh process blocks before lego after a crash between account rename an
   await assert.rejects(fs.lstat(account), { code: 'ENOENT' });
   await assert.rejects(fs.lstat(files.state), { code: 'ENOENT' });
   const lock = path.join(config.dataDir, config.environment, '.run.lock');
-  assert.equal(JSON.parse(await fs.readFile(lock, 'utf8')).pid, Number(child.stdout.trim()));
-  // The fixture process has exited and never spawned children. Model a user
-  // safely clearing only this verified stale test lock before restarting.
-  await fs.unlink(lock);
+  if (process.platform === 'linux') {
+    assert.deepEqual(JSON.parse(await fs.readFile(lock, 'utf8')), { protocol: 'certflow-flock-v1' });
+    // The kernel lease must clear after the child exits; keep its inode.
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const probe = await runProcess('/usr/bin/flock', ['-n', '-E', '75', lock, '/bin/true'], { cwd: directory, timeoutMs: 5000 });
+      if (probe.code === 0) break;
+      if (probe.code !== 75 || attempt === 29) assert.fail('the exited process still holds its kernel lock');
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  } else {
+    assert.equal(JSON.parse(await fs.readFile(lock, 'utf8')).pid, Number(child.stdout.trim()));
+    // Windows still uses the legacy wx lock and requires verified cleanup.
+    await fs.unlink(lock);
+  }
   const restarted = await runProcess(process.execPath, ['--input-type=module', '-e', `
     import { runOnce } from ${JSON.stringify(coreUrl)};
     const result = await runOnce(${JSON.stringify(config)}, { executor: async () => { throw new Error('ACME must not run after an unconfirmed move'); } });
